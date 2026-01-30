@@ -1,0 +1,12 @@
+{
+  "name": "api-tools",
+  "description": "Tools for working with APIs: convert documentation to OpenAPI specs",
+  "version": "1.0.0",
+  "author": {
+    "name": "sklukin"
+  },
+  "homepage": "https://github.com/Educentr/claude",
+  "repository": "https://github.com/Educentr/claude",
+  "license": "MIT",
+  "keywords": ["openapi", "swagger", "api", "yaml", "ogen"]
+}

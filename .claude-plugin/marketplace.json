@@ -1,0 +1,17 @@
+{
+  "name": "educentr-marketplace",
+  "owner": {
+    "name": "sklukin"
+  },
+  "plugins": [
+    {
+      "name": "api-tools",
+      "source": "./plugins/api-tools",
+      "description": "Tools for working with APIs: convert documentation to OpenAPI specs",
+      "version": "1.0.0",
+      "author": {
+        "name": "sklukin"
+      }
+    }
+  ]
+}
