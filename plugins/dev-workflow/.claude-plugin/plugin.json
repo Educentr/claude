@@ -1,0 +1,12 @@
+{
+  "name": "dev-workflow",
+  "description": "Development workflow skills: feature planning, implementation checklists",
+  "version": "1.0.0",
+  "author": {
+    "name": "sklukin"
+  },
+  "homepage": "https://github.com/Educentr/claude",
+  "repository": "https://github.com/Educentr/claude",
+  "license": "MIT",
+  "keywords": ["planning", "features", "workflow", "checklist", "edge-cases"]
+}
