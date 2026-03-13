@@ -1,0 +1,10 @@
+{
+  "eval_id": 1,
+  "eval_name": "troubleshoot-unused-transport",
+  "prompt": "I'm getting error: rest 'api' is not used in any application. Config has rest api + sys, worker notifier, but application only has sys transport and notifier worker.",
+  "assertions": [
+    {"text": "Correctly identifies that 'api' REST transport is missing from application transport list", "type": "diagnosis"},
+    {"text": "Provides corrected config with api added to application transport", "type": "contains"},
+    {"text": "Uses object format [{name: api}] in the fix", "type": "format"}
+  ]
+}

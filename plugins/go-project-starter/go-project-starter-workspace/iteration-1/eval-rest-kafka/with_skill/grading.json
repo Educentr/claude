@@ -1,0 +1,15 @@
+{
+  "eval_id": 0,
+  "run_id": "eval-rest-kafka-with_skill",
+  "expectations": [
+    {"text": "Has main section with name: order-service, logger, registry_type", "passed": true, "evidence": "main section present with name: order-service, logger: zerolog, registry_type: github"},
+    {"text": "Has git section with repo and module_path", "passed": true, "evidence": "git section has repo and module_path for github.com/mycompany/order-service"},
+    {"text": "Has REST ogen transport with path to swagger", "passed": true, "evidence": "rest api with generator_type: ogen, path: [./api.swagger.yml], port: 8080"},
+    {"text": "Has sys transport with template generator", "passed": true, "evidence": "sys transport with generator_type: template, generator_template: sys, port: 9090"},
+    {"text": "Has jsonschema section for typed messages", "passed": true, "evidence": "jsonschema section with name: orders, two schemas with id and path"},
+    {"text": "Has kafka producer with events referencing jsonschema", "passed": true, "evidence": "kafka producer with events order_created/order_updated, schema: orders.order_created/orders.order_updated"},
+    {"text": "Has application with transport in object format and kafka ref", "passed": true, "evidence": "application 'server' with transport [{name: api}, {name: sys}] and kafka [order_producer]"},
+    {"text": "Transport uses object format (- name: x) not string format", "passed": true, "evidence": "Transport uses - name: api and - name: sys format"},
+    {"text": "All defined entities are used in applications", "passed": true, "evidence": "Both REST transports and kafka producer referenced in server application"}
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "eval_id": 0,
+  "eval_name": "rest-kafka-config",
+  "prompt": "I need to create a project.yaml config for a new Go microservice called 'order-service'. It should have a REST API generated from OpenAPI spec (api.swagger.yml), a Kafka producer that sends order_created and order_updated events with typed messages from JSON Schema, and a sys endpoint for metrics. The git repo is github.com/mycompany/order-service. Please write the complete project.yaml.",
+  "assertions": [
+    {"text": "Has main section with name: order-service, logger, registry_type", "type": "contains"},
+    {"text": "Has git section with repo and module_path", "type": "contains"},
+    {"text": "Has REST ogen transport with path to swagger", "type": "contains"},
+    {"text": "Has sys transport with template generator", "type": "contains"},
+    {"text": "Has jsonschema section for typed messages", "type": "contains"},
+    {"text": "Has kafka producer with events referencing jsonschema", "type": "contains"},
+    {"text": "Has application with transport in object format and kafka ref", "type": "contains"},
+    {"text": "Transport uses object format (- name: x) not string format", "type": "format"},
+    {"text": "All defined entities are used in applications", "type": "validation"}
+  ]
+}

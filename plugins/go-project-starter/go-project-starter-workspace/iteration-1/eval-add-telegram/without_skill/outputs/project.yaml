@@ -1,0 +1,55 @@
+main:
+  name: myapp
+  logger: zerolog
+  registry_type: github
+
+git:
+  repo: git@github.com:myorg/myapp.git
+  module_path: github.com/myorg/myapp
+
+post_generate:
+  - git_install
+  - call_generate
+  - go_mod_tidy
+
+rest:
+  - name: api
+    path: [./api.swagger.yml]
+    generator_type: ogen
+    port: 8080
+    version: v1
+  - name: sys
+    port: 9090
+    version: v1
+    generator_type: template
+    generator_template: sys
+
+worker:
+  - name: telegrambot
+    generator_type: template
+    generator_template: telegram
+
+driver:
+  - name: telegram
+    import: github.com/myorg/myapp/pkg/drivers/telegram
+    package: telegram
+    obj_name: Telegram
+    service_injection: |
+      telegram.BaseAuth
+      telegram.UnimplementedPayment
+
+applications:
+  - name: server
+    transport:
+      - name: api
+      - name: sys
+
+  - name: bot
+    transport:
+      - name: sys
+    worker:
+      - telegrambot
+    driver:
+      - name: telegram
+        params:
+          - WithUpdatePoller()

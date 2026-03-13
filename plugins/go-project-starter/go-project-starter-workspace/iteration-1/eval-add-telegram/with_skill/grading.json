@@ -1,0 +1,12 @@
+{
+  "eval_id": 2,
+  "run_id": "eval-add-telegram-with_skill",
+  "expectations": [
+    {"text": "Adds worker with generator_type: template, generator_template: telegram", "passed": true, "evidence": "worker section with telegrambot, generator_type: template, generator_template: telegram"},
+    {"text": "Adds driver with name, import, package, obj_name for telegram", "passed": true, "evidence": "driver section with all 4 required fields plus service_injection"},
+    {"text": "Creates separate bot application with sys transport, telegram worker, and telegram driver", "passed": true, "evidence": "telegram-bot application with sys transport, telegrambot worker, telegram driver"},
+    {"text": "Driver import uses project module_path (github.com/myorg/myapp/pkg/drivers/telegram)", "passed": true, "evidence": "import: github.com/myorg/myapp/pkg/drivers/telegram"},
+    {"text": "Original server application and REST config preserved unchanged", "passed": true, "evidence": "server application unchanged with api and sys transports"},
+    {"text": "Bot driver has params like WithUpdatePoller()", "passed": true, "evidence": "params: [WithUpdatePoller()]"}
+  ]
+}

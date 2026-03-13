@@ -1,0 +1,119 @@
+{
+  "skill_name": "go-project-starter",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "I need to create a project.yaml config for a new Go microservice called 'order-service'. It should have a REST API generated from OpenAPI spec (api.swagger.yml), a Kafka producer that sends order_created and order_updated events with typed messages from JSON Schema, and a sys endpoint for metrics. The git repo is github.com/mycompany/order-service. Please write the complete project.yaml.",
+      "expected_output": "A valid project.yaml with REST ogen transport, sys template transport, jsonschema section, kafka producer with schema references, and an application that uses all of them. Must follow all validation rules.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "has_main_section",
+          "description": "Config has main section with name: order-service, logger, registry_type",
+          "type": "contains"
+        },
+        {
+          "name": "has_git_section",
+          "description": "Config has git section with repo and module_path",
+          "type": "contains"
+        },
+        {
+          "name": "has_ogen_rest",
+          "description": "Has REST transport with generator_type: ogen and path to swagger file",
+          "type": "contains"
+        },
+        {
+          "name": "has_sys_transport",
+          "description": "Has sys transport with generator_type: template and generator_template: sys",
+          "type": "contains"
+        },
+        {
+          "name": "has_jsonschema",
+          "description": "Has jsonschema section with schemas for typed Kafka messages",
+          "type": "contains"
+        },
+        {
+          "name": "has_kafka_producer",
+          "description": "Has kafka section with type: producer and events referencing jsonschema",
+          "type": "contains"
+        },
+        {
+          "name": "has_application",
+          "description": "Has applications section with transport in object format [{name: x}] and kafka reference",
+          "type": "contains"
+        },
+        {
+          "name": "transport_object_format",
+          "description": "Transport uses object format (- name: x) not string format (- x)",
+          "type": "format"
+        },
+        {
+          "name": "all_entities_used",
+          "description": "All defined rest, kafka entities are referenced in applications",
+          "type": "validation"
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "prompt": "I'm getting error: rest 'api' is not used in any application. Config has rest api + sys, worker notifier, but application only has sys transport and notifier worker.",
+      "expected_output": "Identifies that 'api' REST transport is not listed in any application's transport array. Fix: add {name: api} to the server application's transport list.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "identifies_missing_transport",
+          "description": "Correctly identifies that 'api' is not in any application's transport list",
+          "type": "diagnosis"
+        },
+        {
+          "name": "provides_fix",
+          "description": "Shows the corrected config with api added to application transport",
+          "type": "contains"
+        },
+        {
+          "name": "uses_object_format",
+          "description": "Fix uses object format [{name: api}] not string format",
+          "type": "format"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Add Telegram bot worker to existing REST API project as separate application/container",
+      "expected_output": "Updated config with: worker section (telegram template), driver section (telegram driver with correct import/package/obj_name), new bot application with sys transport + worker + driver with params",
+      "files": [],
+      "assertions": [
+        {
+          "name": "has_worker_section",
+          "description": "Adds worker with generator_type: template, generator_template: telegram",
+          "type": "contains"
+        },
+        {
+          "name": "has_driver_section",
+          "description": "Adds driver with name, import, package, obj_name for telegram",
+          "type": "contains"
+        },
+        {
+          "name": "has_bot_application",
+          "description": "Creates separate bot application with sys transport, telegram worker, and telegram driver",
+          "type": "contains"
+        },
+        {
+          "name": "driver_import_correct",
+          "description": "Driver import uses the project's module_path (github.com/myorg/myapp/pkg/drivers/telegram)",
+          "type": "format"
+        },
+        {
+          "name": "original_preserved",
+          "description": "Original server application and REST config are preserved unchanged",
+          "type": "preservation"
+        },
+        {
+          "name": "driver_params",
+          "description": "Bot application's driver has params like WithUpdatePoller()",
+          "type": "contains"
+        }
+      ]
+    }
+  ]
+}

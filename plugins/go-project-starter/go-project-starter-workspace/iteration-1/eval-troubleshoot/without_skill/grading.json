@@ -1,0 +1,9 @@
+{
+  "eval_id": 1,
+  "run_id": "eval-troubleshoot-without_skill",
+  "expectations": [
+    {"text": "Correctly identifies that 'api' REST transport is missing from application transport list", "passed": true, "evidence": "States: 'rest section defines a transport named api, but applications section does not reference it'"},
+    {"text": "Provides corrected config with api added to application transport", "passed": true, "evidence": "Shows corrected YAML with - name: api added"},
+    {"text": "Uses object format [{name: api}] in the fix", "passed": true, "evidence": "Fix shows '- name: api' object format"}
+  ]
+}

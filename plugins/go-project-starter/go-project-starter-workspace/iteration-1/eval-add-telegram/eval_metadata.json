@@ -1,0 +1,13 @@
+{
+  "eval_id": 2,
+  "eval_name": "add-telegram-bot",
+  "prompt": "Add Telegram bot worker to existing REST API project as separate application/container",
+  "assertions": [
+    {"text": "Adds worker with generator_type: template, generator_template: telegram", "type": "contains"},
+    {"text": "Adds driver with name, import, package, obj_name for telegram", "type": "contains"},
+    {"text": "Creates separate bot application with sys transport, telegram worker, and telegram driver", "type": "contains"},
+    {"text": "Driver import uses project module_path (github.com/myorg/myapp/pkg/drivers/telegram)", "type": "format"},
+    {"text": "Original server application and REST config preserved unchanged", "type": "preservation"},
+    {"text": "Bot driver has params like WithUpdatePoller()", "type": "contains"}
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "go-project-starter",
+  "description": "Skills for working with go-project-starter code generator: YAML config composition, project generation, dev_stand setup, troubleshooting",
+  "version": "1.0.0",
+  "author": {
+    "name": "sklukin"
+  },
+  "homepage": "https://github.com/Educentr/claude",
+  "repository": "https://github.com/Educentr/claude",
+  "license": "MIT",
+  "keywords": ["go", "microservice", "generator", "yaml", "ogen", "grpc", "kafka", "telegram"]
+}

@@ -1,0 +1,15 @@
+{
+  "eval_id": 0,
+  "run_id": "eval-rest-kafka-without_skill",
+  "expectations": [
+    {"text": "Has main section with name: order-service, logger, registry_type", "passed": true, "evidence": "main section present with all required fields"},
+    {"text": "Has git section with repo and module_path", "passed": true, "evidence": "git section correctly specified"},
+    {"text": "Has REST ogen transport with path to swagger", "passed": true, "evidence": "rest api with generator_type: ogen and path present"},
+    {"text": "Has sys transport with template generator", "passed": true, "evidence": "sys transport present with template type"},
+    {"text": "Has jsonschema section for typed messages", "passed": true, "evidence": "jsonschema with orders schemas present"},
+    {"text": "Has kafka producer with events referencing jsonschema", "passed": true, "evidence": "kafka producer with typed events referencing orders schemas"},
+    {"text": "Has application with transport in object format and kafka ref", "passed": true, "evidence": "application with transport objects and kafka reference"},
+    {"text": "Transport uses object format (- name: x) not string format", "passed": true, "evidence": "Transport uses object format correctly"},
+    {"text": "All defined entities are used in applications", "passed": true, "evidence": "All entities referenced in api application"}
+  ]
+}

@@ -1,0 +1,52 @@
+main:
+  name: order-service
+  logger: zerolog
+  registry_type: github
+
+git:
+  repo: git@github.com:mycompany/order-service.git
+  module_path: github.com/mycompany/order-service
+
+jsonschema:
+  - name: orders
+    schemas:
+      - id: order_created
+        path: ./schemas/order_created.schema.json
+      - id: order_updated
+        path: ./schemas/order_updated.schema.json
+
+rest:
+  - name: api
+    path: [./api.swagger.yml]
+    generator_type: ogen
+    port: 8080
+    version: v1
+  - name: sys
+    port: 9090
+    version: v1
+    generator_type: template
+    generator_template: sys
+
+kafka:
+  - name: order_producer
+    type: producer
+    driver: segmentio
+    client: order_kafka
+    events:
+      - name: order_created
+        schema: orders.order_created
+      - name: order_updated
+        schema: orders.order_updated
+
+post_generate:
+  - git_install
+  - call_generate
+  - go_mod_tidy
+
+applications:
+  - name: server
+    transport:
+      - name: api
+      - name: sys
+    kafka:
+      - order_producer
