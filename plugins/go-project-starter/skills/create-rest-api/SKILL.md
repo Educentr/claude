@@ -126,9 +126,12 @@ If generation fails, read the error, fix the config, and retry.
 
 ```bash
 cd {target_dir}
+chmod +x scripts/*.sh scripts/githooks/*
 make generate
 make build
 ```
+
+**Important:** Generated scripts may lack execute permissions — always `chmod +x` before first build.
 
 If build fails:
 - Check for missing ErrorDefault schema in OpenAPI spec

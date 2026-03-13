@@ -150,6 +150,13 @@ The `UnimplementedHandler` provides stubs for all methods.
 
 ## Build Errors
 
+### `./scripts/goversioncheck.sh: Permission denied`
+**Cause:** Generated scripts don't have execute permission.
+**Fix:** Run before build:
+```bash
+chmod +x scripts/*.sh scripts/githooks/*
+```
+
 ### `could not import` private modules
 **Fix:** Set `private_repos` in git config:
 ```yaml
@@ -204,6 +211,10 @@ Then in your project: `make regenerate`
 
 ### `make regenerate` fails with obsolete files
 **Fix:** When removing a component from config, its generated files auto-delete unless they have user code below the marker. Manually migrate code from those files, then regenerate.
+
+### First regeneration fails with `No rule to make target 'git-init'`
+**Cause:** When regenerating over files from an older go-project-starter version, obsolete files (including Makefile) are removed first, then `git_install` post-generate step tries to run `make git-init` which no longer exists.
+**Fix:** Simply run go-project-starter again — the second run will succeed because the old files are already cleaned up.
 
 ### Makefile targets missing after config change
 **Fix:** `make regenerate` updates the Makefile. But manual targets added below the disclaimer marker are preserved. Check that your manual targets are below the marker.
