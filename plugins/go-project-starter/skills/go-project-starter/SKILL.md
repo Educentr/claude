@@ -19,16 +19,19 @@ go-project-starter is a **code generator** (not a running service). It takes YAM
 
 ### For new projects:
 ```bash
-# 1. Create temp directory
-rm -rf /tmp/gps-test-project && mkdir -p /tmp/gps-test-project
+# 1. Create target directory with .project-config/
+rm -rf /tmp/gps-test-project && mkdir -p /tmp/gps-test-project/.project-config
 
-# 2. Run generator (configDir = where project.yaml + spec files are)
-go-project-starter --configDir=./path/to/configs --target=/tmp/gps-test-project
+# 2. Copy project.yaml and spec files into .project-config/
+cp project.yaml *.swagger.yml /tmp/gps-test-project/.project-config/
 
-# 3. If generation succeeds, try building
+# 3. Run generator (reads config from .project-config/ inside target)
+go-project-starter --target=/tmp/gps-test-project
+
+# 4. If generation succeeds, try building
 cd /tmp/gps-test-project && make generate && make build
 
-# 4. If errors — fix config and repeat from step 2
+# 5. If errors — fix config in .project-config/ and repeat from step 3
 ```
 
 ### For existing projects:
@@ -87,6 +90,9 @@ rest:
 
 post_generate:
   - git_install
+  - tools_install
+  - clean_imports
+  - executable_scripts
   - call_generate
   - go_mod_tidy
 
@@ -96,6 +102,8 @@ applications:
       - name: api
       - name: sys
 ```
+
+**CRITICAL:** Always include `tools_install`, `clean_imports`, and `executable_scripts` in `post_generate`. Without `clean_imports`, ogen_client generates files with unused self-imports causing `import cycle not allowed` build errors. Without `tools_install`, ogen and linter binaries won't be available.
 
 The OpenAPI spec MUST include an `ErrorDefault` schema:
 ```yaml
@@ -192,7 +200,11 @@ git:
 
 post_generate:
   - git_install
+  - tools_install
+  - clean_imports
   - executable_scripts
+  - call_generate
+  - go_mod_tidy
 
 rest:
   - name: sys
@@ -242,9 +254,9 @@ For advanced multi-component configs (REST + Kafka + gRPC + workers), see `refer
 | Field | Default |
 |-------|---------|
 | `golang_version` | 1.24 |
-| `ogen_version` | v0.78.0 |
+| `ogen_version` | v1.20.2 |
 | `argen_version` | v3.1.22 |
-| `golangci_version` | 1.55.2 |
+| `golangci_version` | 2.0.2 |
 | `protobuf_version` | 1.7.0 |
 | `go_jsonschema_version` | v0.16.0 |
 | `runtime_version` | auto |
@@ -340,7 +352,7 @@ transport:
 ```
 
 ### Other sections
-- `post_generate`: `[git_install, tools_install, clean_imports, executable_scripts, call_generate, go_mod_tidy, go_get_u]`
+- `post_generate`: `[git_install, tools_install, clean_imports, executable_scripts, call_generate, go_mod_tidy, go_get_u]`. **Required minimum for any project:** `git_install, tools_install, clean_imports, executable_scripts, call_generate, go_mod_tidy`. Omitting `clean_imports` causes build failures with ogen_client (import cycle errors). Omitting `tools_install` means ogen/linter binaries are missing.
 - `jsonschema[]`: `{name, schemas: [{id, path, type?}], package?}`
 - `grafana.datasources[]`: `{name, type: prometheus/loki, url, access: proxy/direct, isDefault, editable}`
 - `artifacts`: `[docker, deb, rpm, apk]` (default: `[docker]`)
@@ -396,6 +408,9 @@ When user wants local development with OnlineConf:
 
 | Error | Fix |
 |-------|-----|
+| `import cycle not allowed` (ogen_client) | Add `tools_install` + `clean_imports` to `post_generate`, regenerate |
+| `does not contain package golangci-lint/v2` | Set `golangci_version: 2.0.2` in tools section |
+| `Permission denied` (scripts) | Add `executable_scripts` to `post_generate`, regenerate |
 | `duplicate rest name: X` | Ensure unique name+version combinations |
 | `rest 'X' is not used in any application` | Add to an application's transport list |
 | `undefined: oas.ErrorDefault` | Add ErrorDefault schema to OpenAPI spec |

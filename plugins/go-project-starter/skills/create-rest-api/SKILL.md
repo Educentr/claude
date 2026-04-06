@@ -60,6 +60,9 @@ rest:
 
 post_generate:
   - git_install
+  - tools_install
+  - clean_imports
+  - executable_scripts
   - call_generate
   - go_mod_tidy
 
@@ -116,22 +119,23 @@ components:
 # Ensure go-project-starter is installed
 which go-project-starter || go install github.com/Educentr/go-project-starter/cmd/go-project-starter@latest
 
+# Place config in target's .project-config/
+mkdir -p {target_dir}/.project-config
+cp project.yaml *.swagger.yml {target_dir}/.project-config/
+
 # Generate
-go-project-starter --configDir={config_dir} --target={target_dir}
+go-project-starter --target={target_dir}
 ```
 
-If generation fails, read the error, fix the config, and retry.
+If generation fails, read the error, fix config in `.project-config/`, and retry.
 
 ## Step 4: Build
 
 ```bash
 cd {target_dir}
-chmod +x scripts/*.sh scripts/githooks/*
 make generate
 make build
 ```
-
-**Important:** Generated scripts may lack execute permissions — always `chmod +x` before first build.
 
 If build fails:
 - Check for missing ErrorDefault schema in OpenAPI spec

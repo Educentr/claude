@@ -32,9 +32,9 @@ git:
 tools:
   golang_version: string         # Default: "1.24"
   protobuf_version: string       # Default: "1.7.0"
-  ogen_version: string           # Default: "v0.78.0"
+  ogen_version: string           # Default: "v1.20.2"
   argen_version: string          # Default: "v3.1.22". Required if use_active_record: true
-  golangci_version: string       # Default: "1.55.2"
+  golangci_version: string       # Default: "2.0.2"
   go_jsonschema_version: string  # Default: "v0.16.0"
   runtime_version: string        # Auto-set to MinRuntimeVersion
   goat_version: string           # Auto-set

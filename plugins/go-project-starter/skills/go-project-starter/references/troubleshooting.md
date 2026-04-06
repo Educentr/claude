@@ -146,13 +146,27 @@ type Handler struct {
 ```
 The `UnimplementedHandler` provides stubs for all methods.
 
+### `import cycle not allowed` with ogen_client
+**Cause:** `psg_auth_gen.go` for ogen_client transports contains unused self-import that `goimports` should remove.
+**Fix:** Add `clean_imports` (and `tools_install` for goimports binary) to `post_generate`:
+```yaml
+post_generate:
+  - git_install
+  - tools_install
+  - clean_imports
+  - executable_scripts
+  - call_generate
+  - go_mod_tidy
+```
+Then regenerate. The `clean_imports` step runs goimports which removes the unused self-import.
+
 ---
 
 ## Build Errors
 
 ### `./scripts/goversioncheck.sh: Permission denied`
-**Cause:** Generated scripts don't have execute permission.
-**Fix:** Run before build:
+**Cause:** `executable_scripts` missing from `post_generate`.
+**Fix:** Add `executable_scripts` to `post_generate`. If regenerating is not an option:
 ```bash
 chmod +x scripts/*.sh scripts/githooks/*
 ```
@@ -167,6 +181,14 @@ And ensure GOPRIVATE is set and git credentials are configured.
 
 ### `go: module not found` after generation
 **Fix:** Run `go mod tidy` or include `go_mod_tidy` in post_generate.
+
+### `does not contain package github.com/golangci/golangci-lint/v2/cmd/golangci-lint`
+**Cause:** `golangci_version` set to a v1 version (e.g., `1.55.2`) but the generated Makefile uses v2 module path.
+**Fix:** Set `golangci_version: 2.0.2` (or later v2 release) in `tools` section:
+```yaml
+tools:
+  golangci_version: 2.0.2
+```
 
 ### Package version conflicts
 **Fix:** Check `tools` section versions. Update `ogen_version`, `argen_version`, etc. to compatible versions. Run `make go-get-u` to update all deps.
