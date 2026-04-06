@@ -60,6 +60,12 @@ Guide users through these steps:
 7. **Dev stand (optional):** If `dev_stand: true`, run `docker compose -f docker-compose-dev.yaml up`
 8. **Iterate:** Edit config, regenerate. Code below disclaimer markers is preserved.
 
+## Naming Rules
+
+**`main.name` must NOT contain hyphens (or other non-Go-identifier characters).** The generator derives Go type names from `main.name` (e.g., `myservice` → `MyserviceConfig`). A name like `my-service` produces `My-ServiceConfig` which is invalid Go and breaks compilation. Use camelCase or flat lowercase: `myservice`, `myService`, `vtorchestrator`.
+
+This field also controls: OnlineConf env var prefixes (`OC_{name}__...`), Docker image names, `constant.ServiceName`, and `.env` file references.
+
 ## Minimal Config Templates
 
 When a user wants to create a new project, offer the matching template.
