@@ -19,7 +19,7 @@ The task is NOT complete until ALL of these pass:
 
 Ask the user these questions (use AskUserQuestion). Skip questions where user already provided info:
 
-1. **Project name** — service name (lowercase, hyphens ok). Example: `order-service`
+1. **Project name** — service name (lowercase, NO hyphens — hyphens break Go type generation). Example: `orderservice`
 2. **Git repo URL** — e.g., `git@github.com:myorg/order-service.git`
 3. **Go module path** — e.g., `github.com/myorg/order-service`
 4. **OpenAPI spec** — does the user have a swagger file? If yes, where is it? If no, create a minimal one.

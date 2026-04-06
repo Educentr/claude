@@ -19,7 +19,7 @@ The task is NOT complete until ALL of these pass:
 
 Ask the user:
 
-1. **Project name** — e.g., `user-service`
+1. **Project name** — lowercase, NO hyphens (breaks Go type generation). E.g., `userservice`
 2. **Git repo URL**
 3. **Go module path**
 4. **Proto file** — does the user have a .proto file? Where is it?

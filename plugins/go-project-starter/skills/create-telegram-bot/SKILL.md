@@ -19,7 +19,7 @@ The task is NOT complete until ALL of these pass:
 
 Ask the user (skip questions where user already provided info):
 
-1. **Project name** — e.g., `my-bot`
+1. **Project name** — lowercase, NO hyphens (breaks Go type generation). E.g., `mybot`
 2. **Git repo URL** — e.g., `git@github.com:myorg/my-bot.git`
 3. **Go module path** — e.g., `github.com/myorg/my-bot`
 4. **Also need REST API?** — some bots also serve a REST API (webhooks, admin panel)

@@ -6,7 +6,7 @@ Full reference for all go-project-starter config fields.
 
 ```yaml
 main:
-  name: string              # Required. Project name (used in paths, Docker images, constants)
+  name: string              # Required. Project name — NO hyphens (used in Go type names, OnlineConf paths, Docker images, constants)
   logger: string            # Required. "zerolog" or "logrus"
   registry_type: string     # Required. "github", "digitalocean", "aws", "selfhosted"
   author: string            # Default: "Unknown author"
