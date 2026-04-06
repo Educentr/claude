@@ -41,6 +41,14 @@ Ask the user:
 
 ## Step 3: Modify Config
 
+**Also add goat versions to `tools:` section** (required for `make goat-tests-*` targets):
+```yaml
+tools:
+  goat_version: v0.5.0
+  goat_services_version: v0.2.2
+```
+Without these, `GOATVERSION` in the Makefile will be empty and `make goat-tests-*` will fail.
+
 Add `goat_tests` or `goat_tests_config` to the target application:
 
 ### Simple flag:
@@ -139,3 +147,82 @@ make build-for-test                            # Rebuild test binary after code 
 - Test OnlineConf: `tests/etc/onlineconf/TREE.conf` (editable)
 - Production OnlineConf: `etc/onlineconf/` (NEVER edit)
 - Test init: `tests/{app_name}/init.go` — customize test setup here
+
+## Known Issues & Workarounds
+
+### 1. ONLINECONF_DIR must exist even with ONLINECONFIG_FROM_ENV=true
+
+The binary always calls `onlineconf.Initialize(ctx, onlineconf.WithConfigDir(...))` on startup. Even with `ONLINECONFIG_FROM_ENV=true`, it needs a valid directory. In `init.go`'s `NewExecutor()`:
+
+```go
+onlineconfDir, _ := filepath.Abs(filepath.Join("..", "etc", "onlineconf"))
+envVars["ONLINECONF_DIR"] = onlineconfDir
+```
+
+Create the directory: `mkdir -p tests/etc/onlineconf` and add an empty `TREE.conf` file there.
+
+### 2. use_envs projects: no generated InitTestDatabase/CleanupTestData
+
+For `use_envs: true` projects (without ActiveRecord), the generated `psg_base_suite_gen.go` does NOT call `InitTestDatabase()` or `CleanupTestData()` — these functions aren't generated at all.
+
+If the project uses a database, create `tests/{app_name}/db_init.go` manually:
+
+```go
+func InitTestDatabase(ctx context.Context, e *gtt.Env) error {
+    pg := services.MustGetTyped[*psql.Env](e.Manager(), "postgres")
+    db, err := pg.SQL()
+    if err != nil { return err }
+    return appConfig.ApplyMigrations(ctx, db)
+}
+
+func CleanupTestData(ctx context.Context, e *gtt.Env) error {
+    pg := services.MustGetTyped[*psql.Env](e.Manager(), "postgres")
+    db, err := pg.SQL()
+    if err != nil { return err }
+    return appConfig.CleanupTables(ctx, db)
+}
+```
+
+Call `InitTestDatabase()` in each suite's `SetupSuite()` and `CleanupTestData()` in `TearDownTest()`.
+
+### 3. psql testcontainer URI incompatible with pgx
+
+`pg.URI` from `goat-services/psql` can produce connection strings that pgx parses incorrectly (space before `sslmode`). Build the URL from individual fields instead:
+
+```go
+envVars["DATABASE_URL"] = fmt.Sprintf(
+    "postgres://%s:%s@%s:%s/%s?sslmode=disable",
+    pg.DBUser, pg.DBPass, pg.DBHost, pg.DBPort, pg.DBName,
+)
+```
+
+### 4. make goat-tests-* requires onlineconf-updater.conf
+
+`make goat-tests-{app}` runs `onlineconf-update-tests` which needs `tests/etc/onlineconf-updater.conf`. For `use_envs` projects without real OnlineConf, create a stub file or add a custom make target that skips the updater step:
+
+```makefile
+# In Makefile user section (after "If you need you can add your code after this message")
+.PHONY: goat-run
+goat-run:
+	CGO_ENABLED=0 go build -o /tmp/{app_name} ./cmd/{app_name}/
+	go test -count=1 -timeout=600s -v ./tests/{app_name}/
+```
+
+### 5. Race detector segfault on ARM64
+
+`build_for_test-{app}` uses `-cover -race` which can crash on ARM64 (darwin/arm64). Use the custom `goat-run` target from above (without `-race`) as a workaround.
+
+### 6. Daemon workers interfere with test assertions
+
+If the project has daemon workers (supervisor, watchdog, etc.) that run on a timer, their side effects (spawn calls, stop calls) pollute shared mock state during tests.
+
+**Workarounds:**
+- Compare mock state **before and after** a webhook call instead of checking for empty:
+  ```go
+  before := len(getSpawnCalls())
+  s.webhookClient.Post(s.T(), "/webhook/...", payload)
+  time.Sleep(500 * time.Millisecond)
+  s.Equal(before, len(getSpawnCalls()), "should not spawn")
+  ```
+- For supervisor tests: use `SUPERVISOR_INTERVAL=5s` and `s.Eventually()` with 12s timeout
+- In `SetupSuite()`: wait for the initial supervisor tick to complete, then `resetMockState()`

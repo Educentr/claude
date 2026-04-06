@@ -37,8 +37,8 @@ tools:
   golangci_version: string       # Default: "2.0.2"
   go_jsonschema_version: string  # Default: "v0.16.0"
   runtime_version: string        # Auto-set to MinRuntimeVersion
-  goat_version: string           # Auto-set
-  goat_services_version: string  # Auto-set
+  goat_version: string           # Required when goat_tests enabled. E.g. "v0.5.0". Populates GOATVERSION in Makefile.
+  goat_services_version: string  # Required when goat_tests enabled. E.g. "v0.2.2". Populates GOATSERVICESVERSION in Makefile.
   buf_version: string            # For gRPC buf generation
 ```
 

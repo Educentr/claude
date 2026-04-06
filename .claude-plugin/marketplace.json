@@ -26,7 +26,7 @@
       "name": "go-project-starter",
       "source": "./plugins/go-project-starter",
       "description": "Generate Go microservices from YAML configs: REST, gRPC, Kafka, Telegram, CLI with config validation and build verification",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "author": {
         "name": "sklukin"
       }
