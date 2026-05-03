@@ -35,7 +35,12 @@ Ask the user:
    - `ogen` — REST API server from OpenAPI spec (handle incoming requests)
    - `ogen_client` — REST client for calling external API
 2. **Transport name** — unique name (e.g., `admin_api`, `payment_client`)
-3. **OpenAPI spec** — does the user have a swagger file? Path to it?
+3. **OpenAPI spec** — does the user have a swagger file? `path:` accepts a local file (relative to configDir) **or a remote URI** since v0.24.0:
+   - local: `./api/users.swagger.yml`
+   - HTTPS: `https://raw.githubusercontent.com/org/specs/main/users.yaml[?token_env=GITHUB_TOKEN]`
+   - git over SSH: `git+ssh://git@github.com/org/contracts.git@v1.0.0#openapi/users.yaml`
+   - git over HTTPS: `git+https://github.com/org/contracts.git@main?token_env=GITHUB_TOKEN#openapi/users.yaml`
+   - See main go-project-starter SKILL → "Remote Spec Sources" for full grammar.
 4. **Port** — HTTP port (for servers). Must not conflict with existing ports.
 5. **API version** — default `v1`
 6. **Auth** — for servers: `auth_handler: "on"/"off"`? For clients: `auth_params` needed?
@@ -136,7 +141,7 @@ applications:
 ### Validation checklist:
 - [ ] Transport name is unique (no duplicates in rest section)
 - [ ] Port doesn't conflict with existing transports
-- [ ] OpenAPI spec file exists at specified path
+- [ ] OpenAPI spec file exists at specified path (for local paths) — or URI is reachable (for remote)
 - [ ] ErrorDefault schema present in spec (for ogen servers)
 - [ ] Transport added to at least one application
 - [ ] `instantiation` only used with `ogen_client`

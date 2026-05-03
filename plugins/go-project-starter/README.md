@@ -103,7 +103,7 @@ plugins/go-project-starter/
 7. `dev_stand: true` требует `git_install` в post_generate
 8. `use_active_record: true` требует `argen_version` в tools
 9. Нет дубликатов имён внутри одного типа сущностей
-10. Файлы по path должны существовать
+10. Файлы по path должны существовать ИЛИ быть удалёнными URI (`git+ssh://`, `git+https://`, `https://`) — поддержка добавлена в go-project-starter v0.24.0
 11. `instantiation` только для ogen_client и buf_client
 12. OpenAPI спецификация для ogen обязана содержать `ErrorDefault` схему
 13. `use_active_record` per-app может быть только `false`

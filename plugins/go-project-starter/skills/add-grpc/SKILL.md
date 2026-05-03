@@ -32,7 +32,12 @@ Ask the user:
 
 1. **Service name** — gRPC service name from .proto file (e.g., `UserService`)
 2. **Short name** — short identifier for package naming (e.g., `user`). Optional.
-3. **Proto file path** — where is the .proto file? Relative to config directory.
+3. **Proto file path** — where is the .proto file? `path:` accepts a local file (relative to configDir) **or a remote URI** since v0.24.0:
+   - local: `./billing.proto`
+   - git over SSH: `git+ssh://git@github.com/org/proto-shared.git@v1.0.0#billing/v1/billing.proto`
+   - git over HTTPS: `git+https://github.com/org/proto-shared.git@main?token_env=GITHUB_TOKEN#billing/v1/billing.proto`
+   - HTTPS direct: `https://raw.githubusercontent.com/org/proto-shared/main/billing/v1/billing.proto`
+   - See main go-project-starter SKILL → "Remote Spec Sources" for full grammar.
 4. **Port** — gRPC port (default 9000). Must not conflict with existing.
 5. **Instantiation** — `static` (connect at startup, default) or `dynamic` (connect per-request)?
 6. **Local plugins?** — use local buf plugins (`buf_local_plugins: true`)? Recommended if buf is installed locally.
@@ -81,7 +86,7 @@ applications:
 
 ### Validation checklist:
 - [ ] gRPC name is unique
-- [ ] Proto file exists at specified path
+- [ ] Proto file exists at specified path (local) — or URI is reachable (remote)
 - [ ] Port doesn't conflict with existing transports
 - [ ] `generator_type` is `buf_client`
 - [ ] Transport added to at least one application

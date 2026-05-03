@@ -110,6 +110,67 @@ kafka:
 
 ---
 
+## Remote Spec Errors (since v0.24.0)
+
+These errors come from `path:` fields configured with a URI (`git+ssh://`, `git+https://`, `https://`) rather than a local file. See the main go-project-starter SKILL → "Remote Spec Sources" for the full grammar.
+
+### `'git' executable not found in PATH`
+**Cause:** A `git+ssh://` or `git+https://` URI is configured but `git` isn't installed.
+**Fix:** Install git (`brew install git` / `apt-get install git`). Not needed if you only use local paths or `https://` direct downloads.
+
+### `token_env variable is empty: GITHUB_TOKEN`
+**Cause:** URI has `?token_env=GITHUB_TOKEN` but the env var is unset.
+**Fix:**
+```bash
+export GITHUB_TOKEN=ghp_xxx
+make regenerate
+```
+
+### `git clone failed: authentication failed` (for `git+ssh://`)
+**Cause:** ssh-agent isn't running or your key isn't added.
+**Fix:**
+```bash
+ssh-add -l                    # check loaded keys
+ssh-add ~/.ssh/id_ed25519     # add a key
+ssh -T git@github.com         # verify access
+```
+
+### `git clone failed: authentication failed` (for `git+https://`)
+**Cause:** Token is invalid, expired, or lacks scope.
+**Fix:** Regenerate token with appropriate scope (GitHub: `repo`). Re-export the env var.
+
+### `git clone failed: repository not found`
+**Cause:** URL typo or no read access.
+**Fix:** Verify the URL works for plain `git clone <repo>` first.
+
+### `subpath not found in repository: <path>`
+**Cause:** The `#<sub>` fragment doesn't match any file in the cloned repo (typo, wrong ref, file moved).
+**Fix:** The error message lists similar filenames as a hint. Update `#<sub>` accordingly, or pin to a `<ref>` where the file exists.
+
+### `directory subpaths are not supported yet`
+**Cause:** `#<sub>` ends with `/` (you tried to reference a directory).
+**Fix:** Point to a single file. Directory recursion (e.g., for proto trees with imports) isn't supported in v1.
+
+### `HTTP request returned non-2xx status: 404 ...`
+**Cause:** Wrong URL or ref for an `https://` direct download.
+**Fix:** Verify with `curl -I <url>`. Pin a stable ref (tag/SHA) instead of `main` for production.
+
+### `SCP-style git URL not supported, rewrite as git+ssh://`
+**Cause:** You used `git@github.com:org/repo.git` syntax.
+**Fix:** Rewrite as `git+ssh://git@github.com/org/repo.git@<ref>#<sub>`.
+
+### `Invalid path: ...` during config validation
+**Cause:** Local path doesn't exist OR URI has a syntax error (e.g., missing `#<sub>` for git).
+**Fix:** For local paths, verify the file is in configDir. For URIs, validate the grammar:
+```
+git+ssh://git@host/org/repo.git@<ref>#<sub>           # ref optional, sub required
+git+https://host/org/repo.git@<ref>?token_env=NAME#<sub>
+https://host/file.yaml?token_env=NAME
+```
+Query params (`?token_env=...`) must come **before** the fragment (`#<sub>`) per RFC 3986.
+
+---
+
 ## Ogen Compilation Errors
 
 ### `undefined: oas.ErrorDefault`

@@ -50,6 +50,8 @@ jsonschema:
         path: ./schemas/{event_name}.schema.json
 ```
 
+Since v0.24.0 `schemas[].path` also accepts remote URIs (`git+ssh://`, `git+https://`, `https://`) — handy when schemas are shared across services via a contracts repo. See main go-project-starter SKILL → "Remote Spec Sources" for the URI grammar.
+
 Create the JSON Schema files:
 ```json
 {

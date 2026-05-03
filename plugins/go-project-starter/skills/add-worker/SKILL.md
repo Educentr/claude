@@ -33,7 +33,7 @@ Ask the user:
 
 1. **Worker type?** — `daemon` (periodic background tasks) or `queue` (message queue processor)
 2. **Worker name** — unique name, e.g., `status_updater`, `email_processor`
-3. **If queue:** queues contract — path to existing `queues.yaml` or create a new one? If creating:
+3. **If queue:** queues contract — path to existing `queues.yaml` or create a new one? Since v0.24.0 `path:` accepts both local files and remote URIs (`git+ssh://`, `git+https://`, `https://`) — useful when contracts live in a shared repo. See main go-project-starter SKILL → "Remote Spec Sources" for the URI grammar. If creating a new contract:
    - Queue names (e.g., `email_send`, `report_generate`)
    - Description for each queue
    - Payload fields: name, type (`string`, `int`, `bool`, `float64`, `duration`), required flag

@@ -367,6 +367,88 @@ transport:
 - `deploy.log_collector`: `{type: loki, parameters: {loki-url, loki-retries, loki-timeout}}`
 - `docker.image_prefix`: default `educentr`
 
+## Remote Spec Sources (since v0.24.0)
+
+Every `path:` field — `rest.path`, `grpc.path`, `jsonschema.path` / `jsonschema.schemas[].path`, `cli.path`, and `worker.path` (for `generator_template: queue`) — accepts a URI in addition to a local file. The generator fetches remote sources at `make regenerate` time and copies them into `api/` (or, for inline-parsed CLI / queue contracts, materializes them in a scratch dir and parses on the fly).
+
+### URI grammar
+
+| Form | Source |
+|---|---|
+| `./api.yaml`, `/abs/api.yaml` | local file (unchanged, default) |
+| `https://host/file.yaml[?token_env=NAME]` | direct download, optional `Authorization: Bearer ${NAME}` |
+| `git+ssh://git@host/org/repo.git@<ref>#<sub>` | git over SSH (uses ssh-agent / `~/.ssh/config`) |
+| `git+https://host/org/repo.git@<ref>#<sub>[?token_env=NAME]` | git over HTTPS, optional token |
+
+Rules:
+- `<ref>` = branch / tag / commit SHA. Omit (no `@`) → `HEAD`. **Pin a tag or SHA for reproducibility.**
+- `<sub>` = path of the file inside the repo (URI fragment). Required for git. Must be a single file (directory subpaths not supported in v1).
+- `?token_env=NAME` (HTTPS only — both `https://` and `git+https://`) — names an env var holding the secret. **Never write the token in YAML or commit it.** The token is only read at resolve time and is scrubbed from logs.
+- Order per RFC 3986: `?token_env=...` goes **before** `#<sub>`.
+- SCP-style `git@host:org/repo.git` is rejected — rewrite as `git+ssh://git@host/org/repo.git`.
+
+### Authentication
+
+| Source | Setup |
+|---|---|
+| `git+ssh://` | Whatever works for your local `git clone`. ssh-agent / `~/.ssh/config` is inherited. Nothing extra in YAML. |
+| `git+https://` (public repo) | No `token_env` — anonymous clone. |
+| `git+https://` (private repo) | `?token_env=GITHUB_TOKEN` (or any name); `export GITHUB_TOKEN=...` before `make regenerate`. |
+| `https://` (raw file) | Same — `?token_env=NAME` adds `Authorization: Bearer ${NAME}`. |
+
+### Examples
+
+```yaml
+rest:
+  - name: users
+    path:
+      - git+ssh://git@github.com/org/api-specs.git@v2.3.1#openapi/users.yaml
+    generator_type: ogen
+    port: 8081
+    version: v1
+
+grpc:
+  - name: BillingService
+    path: git+https://github.com/org/proto-shared.git@main?token_env=GITHUB_TOKEN#billing/v1/billing.proto
+    generator_type: buf_client
+    port: 8090
+
+jsonschema:
+  - name: events
+    schemas:
+      - id: order_created
+        path: https://raw.githubusercontent.com/org/event-schemas/v1/order_created.json
+
+cli:
+  - name: admin
+    path:
+      - git+ssh://git@github.com/org/contracts.git@main#runtime/admin-commands.yaml
+    generator_type: template
+    generator_template: cli
+
+worker:
+  - name: task_processor
+    generator_type: template
+    generator_template: queue
+    path:
+      - git+ssh://git@github.com/org/contracts.git@main#runtime/queues.yaml
+```
+
+### When suggesting URIs
+
+- Default to **`git+ssh://`** for private repos — no token plumbing required if the developer can already `git clone` the source repo.
+- Suggest **`git+https://...?token_env=GITHUB_TOKEN`** for CI environments where ssh-agent isn't available.
+- Use plain **`https://`** for one-off public files (e.g., `raw.githubusercontent.com/...`).
+- **Pin a tag or SHA** (e.g., `@v1.0.0`, `@a1b2c3d`) for production projects. `@main` is fine for development but warned against for reproducibility.
+
+### After fetching
+
+- REST/gRPC/JSON Schema specs are copied into `api/{rest|grpc|schema}/...` and committed alongside the generated project — **subsequent builds work offline**.
+- CLI / queue contracts are parsed and discarded (the generated Go types embed the contract).
+- Re-running `make regenerate` re-fetches the source — pulls newer revisions of mutable refs and verifies pinned ones.
+
+Full reference: [`docs/configuration/remote-specs.md`](https://github.com/Educentr/go-project-starter/blob/main/docs/configuration/remote-specs.md) in the generator repo.
+
 ## Validation Rules
 
 These rules are enforced by the generator. Breaking any of them causes an error. Always follow them when composing configs:
@@ -380,7 +462,7 @@ These rules are enforced by the generator. Breaking any of them causes an error.
 7. **dev_stand requires git_install.** `dev_stand: true` needs `git_install` in `post_generate`.
 8. **ActiveRecord requires ArgenVersion.** `use_active_record: true` needs `argen_version` in tools (has default).
 9. **No duplicate names.** Within each entity type (rest, grpc, driver, etc.).
-10. **Path files must exist.** REST/gRPC paths are resolved relative to configDir.
+10. **Path files must exist OR be remote URIs.** Local paths are resolved relative to configDir and verified at config-load time. Remote URIs (`git+ssh://`, `git+https://`, `https://`) skip the existence check during validation and are fetched at generate time. See "Remote Spec Sources" above for the URI grammar.
 11. **instantiation only for clients.** Only `ogen_client` and `buf_client` support `instantiation`.
 12. **ErrorDefault schema required.** ogen OpenAPI specs MUST include `ErrorDefault` schema.
 13. **use_active_record per-app: only false.** Can disable AR per-app, not enable.
@@ -428,6 +510,14 @@ When user wants local development with OnlineConf:
 | `Queue worker requires path` | Add `path: [./queues.yaml]` to queue worker |
 | OnlineConf updater not creating TREE.cdb | `docker compose -f docker-compose-dev.yaml down -v` then up |
 | `instantiation is only supported for ogen_client` | Remove `instantiation` from non-client transports |
+| `'git' executable not found in PATH` | Install `git` — required for `git+ssh://` and `git+https://` paths |
+| `token_env variable is empty: GITHUB_TOKEN` | `export GITHUB_TOKEN=...` before `make regenerate` |
+| `git clone failed: authentication failed` (ssh) | Check `ssh-add -l`, then `ssh-add ~/.ssh/id_ed25519`; verify with `ssh -T git@github.com` |
+| `git clone failed: repository not found` | Wrong URL or no access — try `git clone <repo>` directly |
+| `subpath not found in repository: <path>` | Typo in `#<sub>` — error message lists similar filenames |
+| `directory subpaths are not supported yet` | Remove trailing `/` from `#<sub>` — v1 supports files only |
+| `HTTP request returned non-2xx status: 404 ...` | Wrong URL or ref — verify with `curl -I <url>` |
+| `SCP-style git URL not supported` | Rewrite `git@host:org/repo.git` as `git+ssh://git@host/org/repo.git` |
 
 For exhaustive troubleshooting, see `references/troubleshooting.md`.
 

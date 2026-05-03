@@ -22,7 +22,11 @@ Ask the user:
 1. **Project name** — lowercase, NO hyphens (breaks Go type generation). E.g., `userservice`
 2. **Git repo URL**
 3. **Go module path**
-4. **Proto file** — does the user have a .proto file? Where is it?
+4. **Proto file** — does the user have a .proto file? `path:` accepts a local file (relative to configDir) **or a remote URI** since v0.24.0:
+   - local: `./service.proto`
+   - git over SSH: `git+ssh://git@github.com/org/proto-shared.git@v1.0.0#users/v1/users.proto`
+   - git over HTTPS: `git+https://github.com/org/proto-shared.git@main?token_env=GITHUB_TOKEN#users/v1/users.proto`
+   - See main go-project-starter SKILL → "Remote Spec Sources" for full grammar.
 5. **gRPC port** — default 9000
 6. **Short name** — short identifier for package naming (e.g., `users`)
 7. **Instantiation mode** — `static` (connect at startup) or `dynamic` (connect per-request)? Default: static
@@ -98,7 +102,7 @@ make build
 ```
 
 Common issues:
-- Proto file must exist at the specified path relative to configDir
+- Proto file must exist at the specified path relative to configDir (local) — or be reachable via the configured URI (remote)
 - `buf` must be installed for proto generation
 - If `buf_local_plugins: true`, local protoc plugins must be installed
 

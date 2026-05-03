@@ -22,7 +22,12 @@ Ask the user these questions (use AskUserQuestion). Skip questions where user al
 1. **Project name** — service name (lowercase, NO hyphens — hyphens break Go type generation). Example: `orderservice`
 2. **Git repo URL** — e.g., `git@github.com:myorg/order-service.git`
 3. **Go module path** — e.g., `github.com/myorg/order-service`
-4. **OpenAPI spec** — does the user have a swagger file? If yes, where is it? If no, create a minimal one.
+4. **OpenAPI spec** — does the user have a swagger file? If yes, where is it? If no, create a minimal one. Since v0.24.0 `path:` accepts not only local files but also URIs:
+   - local: `./api.swagger.yml`
+   - HTTPS: `https://raw.githubusercontent.com/org/specs/main/api.yaml`
+   - git over SSH: `git+ssh://git@github.com/org/contracts.git@v1.0.0#openapi/api.yaml`
+   - git over HTTPS: `git+https://github.com/org/contracts.git@main?token_env=GITHUB_TOKEN#openapi/api.yaml`
+   - See main go-project-starter SKILL → "Remote Spec Sources" for full grammar.
 5. **API port** — default 8080
 6. **Auth handler** — does the API need auth? (`auth_handler: "on"` or `"off"`)
 7. **Dev stand** — need local Docker environment with OnlineConf? (default: no)

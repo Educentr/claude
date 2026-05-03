@@ -2,6 +2,21 @@
 
 Full reference for all go-project-starter config fields.
 
+## A note on `path:` fields
+
+Every `path:` field in this schema (`rest.path`, `grpc.path`, `jsonschema.path`, `jsonschema.schemas[].path`, `cli.path`, `worker.path` for queue templates) accepts both **local files** (the historical default) and **remote URIs** introduced in v0.24.0:
+
+```
+./local.yaml                                                       # local file
+https://host/file.yaml[?token_env=NAME]                            # HTTPS download
+git+ssh://git@host/org/repo.git@<ref>#<sub>                        # git over SSH
+git+https://host/org/repo.git@<ref>#<sub>[?token_env=NAME]         # git over HTTPS
+```
+
+`<ref>` = branch/tag/SHA (defaults to `HEAD`); `<sub>` = file path inside the repo (required for git, single file only). `?token_env=NAME` (HTTPS only) names an env var holding the token — never write the token in YAML. RFC 3986 order: query before fragment.
+
+See the main SKILL.md "Remote Spec Sources" section and [`docs/configuration/remote-specs.md`](https://github.com/Educentr/go-project-starter/blob/main/docs/configuration/remote-specs.md) for full grammar, auth matrix, and troubleshooting.
+
 ## main (required)
 
 ```yaml
@@ -47,7 +62,7 @@ tools:
 ```yaml
 rest:
   - name: string              # Required. Unique transport name
-    path: [string]            # Required for ogen/ogen_client. OpenAPI spec paths (relative to configDir)
+    path: [string]            # Required for ogen/ogen_client. OpenAPI spec paths — local (relative to configDir) or remote URI (https://, git+ssh://, git+https://)
     generator_type: string    # Required. "ogen" | "template" | "ogen_client"
     generator_template: string # Required for "template" type. E.g., "sys"
     port: uint                # Required. HTTP port
@@ -97,7 +112,7 @@ rest:
 ```yaml
 grpc:
   - name: string              # Required. Unique service name
-    path: string              # Required. Path to .proto file (relative to configDir)
+    path: string              # Required. Path to .proto file — local (relative to configDir) or remote URI
     short: string             # Optional. Short name for package naming
     port: uint                # Required. gRPC port
     generator_type: string    # Required. "buf_client" (only client supported now)
@@ -163,7 +178,7 @@ worker:
   - name: string              # Required. Unique worker name
     generator_type: string    # Required. Must be "template"
     generator_template: string # Required. "telegram", "daemon", or "queue"
-    path: [string]            # Required for "queue". Path to queues.yaml contract
+    path: [string]            # Required for "queue". Path to queues.yaml — local or remote URI (since v0.24.0)
     version: string           # Optional
 ```
 
@@ -207,7 +222,7 @@ queues:
 ```yaml
 cli:
   - name: string              # Required. Unique CLI name
-    path: [string]            # Optional. Path to commands.yaml spec
+    path: [string]            # Optional. Path to commands.yaml — local or remote URI (since v0.24.0)
     generator_type: string    # Required. "template"
     generator_template: string # Required. "cli"
 ```
@@ -242,11 +257,11 @@ jsonschema:
   - name: string              # Required. Schema set identifier
     schemas:                  # Recommended format
       - id: string            # Required. Schema ID (used in kafka references)
-        path: string          # Required. Path to .json schema file
+        path: string          # Required. Path to .json schema file — local or remote URI
         type: string          # Optional. Go type name (auto-generated from filename if empty)
     package: string           # Optional. Go package name (defaults to name)
     # Legacy format (deprecated):
-    path: [string]            # Paths to schema files
+    path: [string]            # Paths to schema files — local or remote URI
 ```
 
 ## driver[] (external integrations)
