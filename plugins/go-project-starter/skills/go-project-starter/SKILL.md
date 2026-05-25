@@ -449,6 +449,54 @@ worker:
 
 Full reference: [`docs/configuration/remote-specs.md`](https://github.com/Educentr/go-project-starter/blob/main/docs/configuration/remote-specs.md) in the generator repo.
 
+## Cross-Directory $ref Rewriting (since v0.25)
+
+Contract repositories often spread specs across sub-directories with relative `$ref`s between them:
+
+```yaml
+# contracts/orchestrator/api.swagger.yml
+allOf:
+  - $ref: '../common/workspace.swagger.yml#/components/schemas/RuntimeWorkspaceConfig'
+```
+
+The generator copies every `path:` file **flat** into `api/rest/<svc>/<ver>/` (or `api/schema/<name>/`), so `../common/` ends up pointing nowhere and ogen / go-jsonschema fail to resolve the ref.
+
+**Fix:** enable `rewrite_refs: true` on the Rest- or JSONSchema-block. After `CopySpecs` / `CopySchemas`, the generator walks the target directory and rewrites each `$ref` whose `basename(<path>)` matches a sibling file to `./<basename>#<frag>`. Default is `false` — existing projects are unaffected.
+
+```yaml
+rest:
+  - name: api
+    rewrite_refs: true
+    path:
+      - git+ssh://git@github.com/org/contracts.git@v1.0.0#orchestrator/api.swagger.yml
+      - git+ssh://git@github.com/org/contracts.git@v1.0.0#common/workspace.swagger.yml
+
+jsonschema:
+  - name: events
+    rewrite_refs: true
+    schemas:
+      - id: order, path: ...
+```
+
+### When to enable
+
+- Specs come from a repo where common types live in a sibling directory referenced by relative path (`../common/...`, `../shared/...`).
+- Consumer-side workaround scripts (e.g. `regen-cleanup.sh` with `perl -i -pe 's{\.\./common/...}{./...}'`) are in use today — `rewrite_refs: true` makes them obsolete.
+
+### When NOT to enable
+
+- All specs already use only internal refs (`#/components/...`) or are self-contained — no value, just a no-op pass.
+- Consumer deliberately references external URLs (`https://...`) — those are skipped with a warning either way; the flag only handles local cross-directory refs.
+
+### Mechanics
+
+- YAML processing via `gopkg.in/yaml.v3` (`yaml.Node`) — comments and key order survive the round-trip.
+- JSON processing via line-regex over `"$ref": "..."` — JSON forbids multi-line strings / comments, so the regex is safe.
+- A whitelist built from copied basenames prevents accidental matches against user-authored files dropped into the directory.
+- Non-recursive — only the top-level of the target directory is scanned.
+
+Full reference: [`docs/configuration/rewrite-refs.md`](https://github.com/Educentr/go-project-starter/blob/main/docs/configuration/rewrite-refs.md).
+
 ## Validation Rules
 
 These rules are enforced by the generator. Breaking any of them causes an error. Always follow them when composing configs:

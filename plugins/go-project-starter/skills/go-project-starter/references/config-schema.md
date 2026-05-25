@@ -76,6 +76,7 @@ rest:
       transport: string       # "header"
       type: string            # "apikey" or "bearer"
     instantiation: string     # For ogen_client only. "static" (default) or "dynamic"
+    rewrite_refs: bool        # Default: false. Rewrite cross-directory $ref (../common/foo.yml) into local sibling refs (./foo.yml) after CopySpecs. See main SKILL "Cross-Directory $ref Rewriting" section.
 ```
 
 ### Generator types explained
@@ -260,6 +261,7 @@ jsonschema:
         path: string          # Required. Path to .json schema file — local or remote URI
         type: string          # Optional. Go type name (auto-generated from filename if empty)
     package: string           # Optional. Go package name (defaults to name)
+    rewrite_refs: bool        # Default: false. Same as rest.rewrite_refs — rewrite cross-directory $ref into local sibling refs after CopySchemas. See main SKILL "Cross-Directory $ref Rewriting" section.
     # Legacy format (deprecated):
     path: [string]            # Paths to schema files — local or remote URI
 ```

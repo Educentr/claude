@@ -207,6 +207,19 @@ type Handler struct {
 ```
 The `UnimplementedHandler` provides stubs for all methods.
 
+### Ogen fails to resolve `$ref: '../common/foo.yaml#/...'` (or similar `..` path)
+**Cause:** Spec uses cross-directory `$ref` (`../common/`, `../shared/`) but the generator copies every `path:` file flat into `api/rest/<svc>/<ver>/`, so the relative path points nowhere. Ogen's `allow_remote: true` only resolves siblings in the same directory.
+**Fix:** Enable `rewrite_refs: true` on the rest block — the generator will rewrite `../common/foo.yaml#/X` to `./foo.yaml#/X` after copy, provided `foo.yaml` is also listed in `path:`. See main SKILL "Cross-Directory $ref Rewriting" section.
+```yaml
+rest:
+  - name: api
+    rewrite_refs: true
+    path:
+      - git+ssh://...#orchestrator/api.swagger.yml
+      - git+ssh://...#common/foo.yaml          # must be added as a sibling
+```
+If you previously worked around this with a `regen-cleanup.sh` (perl `s{\.\./common/...}{./...}`) — that script can be removed once the flag is on.
+
 ### `import cycle not allowed` with ogen_client
 **Cause:** `psg_auth_gen.go` for ogen_client transports contains unused self-import that `goimports` should remove.
 **Fix:** Add `clean_imports` (and `tools_install` for goimports binary) to `post_generate`:
