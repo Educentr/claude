@@ -88,9 +88,12 @@ push, merge or deploy.
   read-only background Codex is started instead; `--headless` asks for that even when a chat is
   open. What is a question rather than an absence — two chats for one project, a named thread that
   is not open, an `lsof` that could not read the sessions directory — stops and asks.
-- **An open chat is one a process holds open.** A closed session's rollout file stays on disk and
-  `codex queue` still accepts it, so delivery checks `lsof` first; a message that cannot be
-  delivered is withdrawn (exit 6), never left for something else to claim.
+- **An open chat is one a process holds open** — its thread lock (every version) or its rollout
+  file (older ones); what the thread is comes from Codex's thread store. A closed session's
+  rollout stays on disk and `codex queue` still accepts it, so delivery checks that first; a
+  message that cannot be delivered is withdrawn (exit 6), never left for something else to claim.
+- **A Codex open but never spoken to is not "no Codex".** It has no thread to queue into, so the
+  answer is to say so — not to start a second one behind the user's back.
 - **A failed run is not a verdict.** Timeouts, non-zero exits, a worktree outside the project and a
   spent round limit come back as failures (exit 4), not as a review.
 - **Waiting is not running.** When the wait ends first, `await` the same id — resending would run
@@ -109,10 +112,11 @@ push, merge or deploy.
 
 ## Known limits
 
-- **A chat is found through `lsof`** over `$CODEX_HOME/sessions` — that a running process holds
-  the rollout file open is what "the chat is open" means here. It leans on how the Codex TUI keeps
-  that file; if a version stops holding it, `connect` will say no chat is open and offer the
-  background Codex. Anything `lsof` cannot read makes the answer *unknown*, never "none".
+- **A chat is found through `lsof`** over `$CODEX_HOME/thread-writer-locks` and
+  `$CODEX_HOME/sessions` — that a running process holds one of those open is what "the chat is
+  open" means here, and the thread store (`state_5.sqlite`, via `sqlite3`) says what each thread
+  is. It leans on how the Codex CLI keeps those files; a version that keeps neither would look
+  like no chat at all. Anything `lsof` cannot read makes the answer *unknown*, never "none".
 - **A lock left by a crash is cleared by hand** (`agent-bus unlock <endpoint>`), on purpose: two
   starters could each decide it was stale, and the second would remove the lock the first had just
   taken.

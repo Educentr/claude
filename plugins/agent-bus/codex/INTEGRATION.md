@@ -90,7 +90,9 @@ AGENT_BUS_NAME=claude-demo agent-bus ask codex "Which file decides the retry pol
 ```
 
 `connect` picks the chat whose directory is this project and that a **running** process holds
-open; with no such chat it starts a background Codex instead. It never picks between two chats of
+open — by its thread lock, or by its rollout file on an older CLI. A Codex that is open there but
+has never been spoken to has no conversation to deliver into: that is said plainly, and no
+background Codex is started in its place. With no Codex there at all, a background one starts. It never picks between two chats of
 one project — `agent-bus chats` lists what is open, with the last thing you typed in each, and
 `--thread <id>` (a unique beginning of the id will do) says which. `--headless` asks for the
 background one even when a chat is open. `agent-bus disconnect codex` closes the channel; the chat

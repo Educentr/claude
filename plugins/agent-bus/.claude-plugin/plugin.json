@@ -1,7 +1,7 @@
 {
   "name": "agent-bus",
   "description": "Claude Code <-> Codex on one machine: a channel into the Codex chat you already have open (or a background one), a file-mailbox CLI, and a round-based code-review protocol as one of its uses",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "author": {
     "name": "sklukin"
   },

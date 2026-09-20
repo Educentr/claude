@@ -23,15 +23,27 @@ Mailbox: `$AGENT_BUS_DIR`, default `~/.local/state/agent-bus`. Both sides must u
 | **a chat** (the default) | a Codex the user has open for this project | the sender queues it into that session (`codex queue`) | the user, in that chat — and they can answer or take over themselves |
 | **background** (`--headless`) | nothing was open, or the user asked for it | `serve-codex` polls the inbox and runs `codex exec` read-only | nobody, unless `AGENT_BUS_REPORT_THREAD` reports it into a chat |
 
-A chat is one a **running process holds open** (`lsof` over `$CODEX_HOME/sessions`, `originator:
-codex-tui`, `source: "cli"` — a subagent's rollout and an `exec` run are not chats; an `lsof` that
-could not walk the tree is "unknown", never "none"). The rollout file of a closed session stays on
-disk and `codex queue` still accepts it, so being open is checked before every delivery, and a
-message that provably did not get in is **removed again** and `send` exits **6**.
+A chat is one a **running process holds open**, and what it holds depends on the Codex version:
+every session takes `$CODEX_HOME/thread-writer-locks/<thread>.lock`, and older ones also keep the
+rollout `.jsonl` under `$CODEX_HOME/sessions` open. What a thread *is* — the user's own chat, a
+subagent's, an `exec` run — comes from the thread store (`state_5.sqlite`, read with `sqlite3`
+when it is there) or from the rollout's first record; the directory it belongs to is the
+session's own working directory. A subagent thread and an `exec` run are not chats, and an `lsof`
+that could not walk the tree is "unknown", never "none".
 
-`agent-bus chats` lists the open chats with the last thing the user typed in each — that, not the
-id, is what a person recognises a chat by. `--thread` takes the id, or enough of its beginning to
-be unambiguous.
+**A session nobody has spoken to yet has neither a thread-store row nor a rollout** — it holds its
+lock and nothing else, so there is nothing to queue into. That is reported as what it is ("open,
+no conversation yet — say anything there"), and it stops the fallback: starting a background Codex
+while one sits open in that very directory would be answering the wrong question.
+
+The rollout file of a closed session stays on disk and `codex queue` still accepts it, so being
+open is checked before every delivery, and a message that provably did not get in is **removed
+again** and `send` exits **6**.
+
+`agent-bus chats` lists both — the chats that can be connected to, named as the thread store names
+them (or by the last thing the user typed, for an older session), and the sessions with no
+conversation yet. That, not the id, is what a person recognises a chat by; `--thread` takes the
+id, or enough of its beginning to be unambiguous.
 
 A chat answers with the ordinary `agent-bus reply <id> -`, which writes into the mailbox. Codex
 runs under `workspace-write`, so the mailbox has to be a writable root for it:

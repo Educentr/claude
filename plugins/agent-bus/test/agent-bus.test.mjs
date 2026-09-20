@@ -432,9 +432,31 @@ function fakeChat({ thread, cwd, originator = 'codex-tui', source = 'cli' }) {
   const file = path.join(codexHome, 'sessions', '2026', '09', '21', `rollout-${thread}.jsonl`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify({ type: 'session_meta', payload: { id: thread, session_id: thread, cwd, originator, source, cli_version: '0.155.1' } })}\n`);
-  const holder = spawn(process.execPath, ['-e', 'require("node:fs").openSync(process.argv[1], "r"); setInterval(() => {}, 1000);', file], { stdio: 'ignore' });
+  return { file, holder: hold([file]), thread };
+}
+
+// A session of the current CLI: it holds a lock named after its thread and writes no rollout at
+// all; what the thread is only appears in the thread store, and only once somebody has spoken.
+function fakeLockedThread(thread) {
+  const lock = path.join(codexHome, 'thread-writer-locks', `${thread}.lock`);
+  fs.mkdirSync(path.dirname(lock), { recursive: true });
+  fs.writeFileSync(lock, '');
+  return { holder: hold([lock]), thread };
+}
+
+// The rows Codex would have written for those threads once they had a turn.
+function fakeThreadStore(rows) {
+  const db = path.join(codexHome, 'state_5.sqlite');
+  const sql = ['create table if not exists threads (id TEXT PRIMARY KEY, cwd TEXT, source TEXT, thread_source TEXT, name TEXT, title TEXT, preview TEXT, first_user_message TEXT);']
+    .concat(rows.map((r) => `insert or replace into threads values ('${r.id}','${r.cwd}','${r.source ?? 'cli'}','${r.thread_source ?? ''}','${r.name ?? ''}','','','');`)).join('\n');
+  return spawnSync('sqlite3', [db], { input: sql, encoding: 'utf8' }).status === 0;
+}
+
+// A process that keeps those files open, as a running Codex does, until the test closes it.
+function hold(files) {
+  const holder = spawn(process.execPath, ['-e', 'const fs=require("node:fs"); for (const f of process.argv.slice(1)) fs.openSync(f,"r"); setInterval(()=>{},1000);', ...files], { stdio: 'ignore', cwd: project });
   holders.push(holder);
-  return { file, holder, thread };
+  return holder;
 }
 const close = (chat) => new Promise((resolve) => { chat.holder.on('exit', resolve); chat.holder.kill(); });
 const lsof = spawnSync('lsof', ['-v'], { encoding: 'utf8' });
@@ -680,7 +702,7 @@ test('chats lists what is open with what was last said in each, and --thread tak
   fs.appendFileSync(chat.file, `${JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text: '[agent-bus:status] Received a question' }] } })}\n`);
   const listed = run(['chats']);
   assert.match(listed.stdout, /chat-labelled/);
-  assert.match(listed.stdout, /last said there: Почему healer ждёт живого владельца\?$/m, 'what the person typed, not the preamble and not a transport report');
+  assert.match(listed.stdout, /^ +Почему healer ждёт живого владельца\?$/m, 'what the person typed, not the preamble and not a transport report');
   assert.equal(run(['connect', 'codex-prefix', '--cd', project, '--thread', 'chat-lab']).status, 0, 'a unique beginning of the id is enough');
   assert.match(run(['chats']).stdout, /peer "codex-prefix" talks to chat-labelled/);
   run(['disconnect', 'codex-prefix']);
@@ -761,4 +783,32 @@ test('disconnect signals the listener this peer stands for, never whoever holds 
   assert.match(r.stderr, /served by pid \d+, not by the pid \d+ that was connected here — nothing was signalled/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(bus, 'locks', 'codex-replaced.pid'), 'utf8')).pid, rec.pid, 'and that listener is untouched');
   assert.match(run(['stop', 'codex-replaced']).stdout, /stopped the server/);
+});
+
+test('a session of the current CLI is found by the lock it holds, with no rollout file at all', { skip: lsof.error ? 'lsof is not installed' : false }, async () => {
+  const chat = fakeLockedThread('11111111-1111-7111-8111-111111111111');
+  const sub = fakeLockedThread('22222222-2222-7222-8222-222222222222');      // its subagent's thread
+  if (!fakeThreadStore([
+    { id: chat.thread, cwd: project, thread_source: 'user', name: 'Чинить healer' },
+    { id: sub.thread, cwd: project, thread_source: 'subagent' },
+  ])) { await close(chat); await close(sub); return; }                        // no sqlite3 here
+  const listed = run(['chats']);
+  assert.match(listed.stdout, /11111111-1111/, 'the chat is found through its lock');
+  assert.match(listed.stdout, /^ +Чинить healer$/m, 'and named by what the thread store calls it');
+  assert.doesNotMatch(listed.stdout, /22222222-2222/, 'a subagent thread is not a chat');
+  assert.equal(run(['connect', 'codex-locked', '--cd', project]).status, 0);
+  assert.match(queuedMessages().pop().thread, /^11111111-1111/);
+  run(['disconnect', 'codex-locked']);
+  await close(chat); await close(sub);
+});
+
+test('a Codex that is open but has not been spoken to is said out loud, not answered with a background one', { skip: lsof.error ? 'lsof is not installed' : false }, async () => {
+  // Open: it holds a lock. Never used: no thread store row and no rollout — nothing to queue into.
+  const fresh = fakeLockedThread('33333333-3333-7333-8333-333333333333');
+  assert.match(run(['chats']).stdout, new RegExp(`Codex sessions? (is|are) open with no conversation yet[\\s\\S]*${project}  \\(pid ${fresh.holder.pid}\\)`));
+  const r = run(['connect', 'codex-fresh', '--cd', project]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /a Codex is open for .*nothing has been said in it yet[\s\S]*Type anything there/);
+  assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-fresh.json')), 'and no background Codex was started instead');
+  await close(fresh);
 });

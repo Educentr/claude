@@ -42,6 +42,9 @@ Arguments: `$ARGUMENTS`
    - **No chat was open** — it starts a background Codex and says so. Tell the user plainly that
      nobody is watching that one, and that opening Codex themselves gives them the visible channel.
      `--headless` forces this even when a chat is open; pass it only if they asked.
+   - **A Codex is open here but nothing has been said in it** — it stops and says so. Do not force
+     `--headless`: tell the user to type anything in that session (a conversation is what there is
+     to deliver into) and connect again.
    - **It stopped with a question** — the message says which. Put it to the user, never guess:
      - *two chats for this project* — it lists each one with its directory and **the last thing
        the user typed in it**. Ask them which (AskUserQuestion, one option per chat, that last
@@ -49,8 +52,9 @@ Arguments: `$ARGUMENTS`
        id are enough.
      - *`--thread …` is not open*, *the name belongs to another pair*, *`lsof` could not read the
        sessions directory* — report what it said and what it offers (another name, `--headless`).
-   - `agent-bus chats` answers "which chats are open" on its own — use it when the user asks, or
-     before connecting if they want to choose up front.
+   - `agent-bus chats` answers "which chats are open" on its own — the chats that can be connected
+     to, and the sessions that are open with no conversation yet. Use it when the user asks which
+     Codex they can talk to, or before connecting if they want to choose up front.
 4. Report: the peer name, which chat (or that it is a background one), the project root, and how
    to close it.
 

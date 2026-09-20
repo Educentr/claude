@@ -286,40 +286,99 @@ function liveRecord(to) {
   } catch { return null; }
 }
 
-// Every rollout file a running Codex holds open: {thread, cwd, pid, file}. A chat the user
-// started themselves is `originator: codex-tui` with `source: "cli"` — a subagent's own rollout
-// (source: {subagent: …}) and every `codex exec` run are not chats anybody is watching.
-// Which files a process holds open is the only honest proof that a chat is still being used: a
-// rollout file lingers after the session is closed, and a message queued into a closed one is
-// read by nobody. An empty list therefore has to mean "there are none", so anything that makes
-// the walk incomplete — lsof missing, a directory it could not open — raises instead of counting
-// as an absence. lsof exits 1 both when it found nothing and when it complained, so the stderr it
-// wrote is what tells the two apart.
-function liveChats() {
-  const sessions = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions');
-  if (!fs.existsSync(sessions)) return [];
-  // +D walks the tree; -F gives one field per line (p<pid>, n<name>), which no path can confuse.
-  const r = spawnSync('lsof', ['-F', 'pn', '+D', sessions], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
-  if (r.error) die(`lsof is needed to tell which Codex chats are open, and it could not be run (${r.error.code ?? r.error.message}) — start the peer in the background instead: agent-bus connect <peer> --headless`);
-  // lsof exits 1 for "found nothing" as well as for "could not read that", so the status alone
-  // settles nothing; what it wrote, and whether it was killed, do. A run that ended on a signal
-  // never finished walking the tree — its empty output is not an answer.
-  if (r.signal || r.status === null) die(`lsof was killed (${r.signal ?? 'no exit status'}) before it could say which Codex chats are open — nothing was concluded from that. Try again, name the chat with --thread, or start the peer in the background: agent-bus connect <peer> --headless`);
-  if (r.stderr.trim()) die(`lsof could not read all of ${sessions}, so an open Codex chat may have been missed:\n${r.stderr.trim()}\nFix that, name the chat with --thread, or start the peer in the background: agent-bus connect <peer> --headless`);
-  const out = [];
-  let pid = null;
-  for (const line of r.stdout.split('\n')) {
-    if (line[0] === 'p') pid = Number(line.slice(1));
-    else if (line[0] === 'n' && line.endsWith('.jsonl')) {
-      const file = line.slice(1);
-      const head = sessionHead(file);
-      if (head && head.originator === 'codex-tui' && head.source === 'cli' && head.id) out.push({ thread: head.id, cwd: head.cwd, pid, file });
+// A Codex the user is sitting in front of, found by what its process holds open. Two witnesses,
+// because two generations of the CLI leave different traces: every running session takes
+// `thread-writer-locks/<thread>.lock`, and older ones also keep the rollout `.jsonl` open. What a
+// thread IS — a chat of the user's, a subagent's, an `exec` run — comes from the thread store
+// (`state_5.sqlite`), or from the rollout's first record when there is one.
+//
+// A session nobody has spoken to yet has neither: it holds its lock and nothing else. There is
+// nothing to queue a message into there — but it is emphatically not "no Codex here", so those
+// are reported apart, and the caller says so instead of starting an agent of its own.
+const codexHome = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+
+// pid -> {pid, cwd, threads: Map(thread -> rollout file or null)}
+function liveHolders() {
+  const holders = new Map();
+  const scan = (where, idOf) => {
+    if (!fs.existsSync(where)) return;
+    // +D walks the tree; -F gives one field per line (p<pid>, n<name>), which no path can confuse.
+    const r = spawnSync('lsof', ['-F', 'pn', '+D', where], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
+    if (r.error) die(`lsof is needed to tell which Codex chats are open, and it could not be run (${r.error.code ?? r.error.message}) — start the peer in the background instead: agent-bus connect <peer> --headless`);
+    // lsof exits 1 for "found nothing" as much as for "could not read that", so the status settles
+    // nothing; what it wrote, and whether it was killed, do. An empty list has to mean "there are
+    // none" — an incomplete walk must never pass for an absence.
+    if (r.signal || r.status === null) die(`lsof was killed (${r.signal ?? 'no exit status'}) before it could say which Codex chats are open — nothing was concluded from that. Try again, name the chat with --thread, or start the peer in the background: agent-bus connect <peer> --headless`);
+    if (r.stderr.trim()) die(`lsof could not read all of ${where}, so an open Codex chat may have been missed:\n${r.stderr.trim()}\nFix that, name the chat with --thread, or start the peer in the background: agent-bus connect <peer> --headless`);
+    let pid = null;
+    for (const line of r.stdout.split('\n')) {
+      if (line[0] === 'p') pid = Number(line.slice(1));
+      else if (line[0] === 'n' && pid) {
+        const found = idOf(line.slice(1));
+        if (!found?.id) continue;
+        const held = holders.get(pid) ?? { pid, cwd: null, threads: new Map() };
+        held.threads.set(found.id, found.file ?? held.threads.get(found.id) ?? null);
+        holders.set(pid, held);
+      }
     }
+  };
+  // A lock is named after its thread; a rollout says which thread it is in its first record —
+  // its file name is Codex's business, not a format to depend on.
+  scan(path.join(codexHome(), 'thread-writer-locks'), (f) => (f.endsWith('.lock') ? { id: path.basename(f, '.lock') } : null));
+  scan(path.join(codexHome(), 'sessions'), (f) => (f.endsWith('.jsonl') ? { id: sessionHead(f)?.id, file: f } : null));
+  for (const held of holders.values()) {
+    // Where the session was started is where its chat belongs — and it is there from the first
+    // moment, unlike anything the session writes.
+    const r = spawnSync('lsof', ['-a', '-p', String(held.pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
+    const line = (r.stdout ?? '').split('\n').filter((l) => l[0] === 'n').pop();
+    if (line) held.cwd = line.slice(1);
+  }
+  return [...holders.values()].filter((h) => h.cwd);
+}
+
+// What the thread store knows about these threads: {id, cwd, kind, label}. Best effort — without
+// sqlite3 the rollout is the only source, which is all an older session leaves anyway.
+function threadRows(ids) {
+  const db = path.join(codexHome(), 'state_5.sqlite');
+  const rows = new Map();
+  if (!ids.length || !fs.existsSync(db)) return rows;
+  const list = ids.map((i) => `'${i.replace(/[^0-9a-f-]/g, '')}'`).join(',');
+  const r = spawnSync('sqlite3', ['-json', '-readonly', db,
+    `select id, cwd, coalesce(thread_source, source) as kind, coalesce(nullif(name,''), nullif(title,''), nullif(preview,''), first_user_message) as label from threads where id in (${list})`],
+  { encoding: 'utf8', timeout: 10000 });
+  if (r.status !== 0 || !r.stdout.trim()) return rows;          // no sqlite3, a locked db, another layout
+  try { for (const row of JSON.parse(r.stdout)) rows.set(row.id, row); } catch { /* not JSON */ }
+  return rows;
+}
+
+// The chats a message can be queued into: {thread, cwd, pid, file, label}. Sessions that are open
+// but have no thread to write to are pushed onto `started` instead.
+function liveChats(started = []) {
+  const holders = liveHolders();
+  const rows = threadRows(holders.flatMap((h) => [...h.threads.keys()]));
+  const out = [];
+  for (const held of holders) {
+    let known = false;
+    for (const [thread, file] of held.threads) {
+      const row = rows.get(thread);
+      const head = file ? sessionHead(file) : null;
+      if (!row && !head) continue;                 // nothing written yet: neither a row nor a rollout
+      known = true;
+      // The user's own chat — not a subagent's thread, not an `exec` run.
+      if (row ? (row.kind === 'user' || row.kind === 'cli') : head.originator === 'codex-tui' && head.source === 'cli') {
+        out.push({ thread, cwd: row?.cwd ?? head?.cwd ?? held.cwd, pid: held.pid, file, label: row?.label || (file ? chatLabel(file) : null) });
+      }
+    }
+    // Open, with not one thread anything is known about: a session nobody has spoken to. A holder
+    // whose threads ARE known and are none of them a chat (a subagent, an exec run) is not that —
+    // it is simply not a chat, and saying "say something in it" would be wrong.
+    if (!known) started.push(held);
   }
   return out;
 }
 
-// What the person would recognise the chat by: the last thing they typed in it. Their own turns
+// What the person would recognise an older chat by, when the thread store has no title for it:
+// the last thing they typed in it. Their own turns
 // are `message` items with role `user`; the ones the tooling writes (the AGENTS.md preamble, the
 // output of a shell command they ran) are not what anybody remembers a chat by. Only the tail of
 // the file is read — a long session is megabytes.
@@ -347,8 +406,9 @@ function chatLabel(file) {
 }
 
 // The chats, as a person picks between them: what was last said in each, and where it runs.
+const trim = (t) => { const one = String(t).split('\n').find((l) => l.trim()) ?? ''; return one.length > 70 ? `${one.slice(0, 70)}…` : one; };
 function describeChats(chats) {
-  return chats.map((c) => `  ${c.thread}\n      ${c.cwd}${chatLabel(c.file) ? `\n      last said there: ${chatLabel(c.file)}` : ''}`).join('\n');
+  return chats.map((c) => `  ${c.thread}\n      ${c.cwd}${c.label ? `\n      ${trim(c.label)}` : ''}`).join('\n');
 }
 
 // The first record of a rollout file, which carries the thread id, the working directory and how
@@ -462,15 +522,21 @@ function usablePeer(to, root) {
 // chats for one project) stops with an error instead: picking for the user would put the
 // conversation in front of whoever is working on something else.
 function chooseChat(to, root) {
-  const open = liveChats();
+  const started = [];
+  const open = liveChats(started);
   if (opts.thread) return chatByThread(open, opts.thread) ?? die(`no open Codex chat has thread ${opts.thread} — open chats:\n${describeChats(open) || '  none'}`);
   const under = (c) => c.cwd && (c.cwd === root || c.cwd.startsWith(root + path.sep) || root.startsWith(c.cwd + path.sep));
   const mine = open.filter(under);
   // Two chats for one project is a question for the person, not a coin toss: which one they meant
   // decides who reads the conversation. The id may be given in full or by a unique beginning.
   if (mine.length > 1) die(`${mine.length} Codex chats are open for ${root} — ask which one, then pass --thread <id>:\n${describeChats(mine)}`);
-  if (mine.length === 0 && open.length) process.stderr.write(`agent-bus: no Codex chat is open for ${root}; these are open elsewhere and were not taken (--thread names one):\n${describeChats(open)}\n`);
-  return mine[0] ?? null;
+  if (mine.length) return mine[0];
+  // A Codex IS open here, it has just never been spoken to — so there is no thread to queue into.
+  // Starting a second, background one behind the user's back would be the wrong answer to that.
+  const waiting = started.filter((h) => h.cwd === root || h.cwd.startsWith(root + path.sep) || root.startsWith(h.cwd + path.sep));
+  if (waiting.length) die(`a Codex is open for ${root}, but nothing has been said in it yet, so it has no conversation to deliver into:\n${describeStarted(waiting)}\nType anything there (even "hi"), then: agent-bus connect ${to} --cd ${root}`);
+  if (open.length) process.stderr.write(`agent-bus: no Codex chat is open for ${root}; these are open elsewhere and were not taken (--thread names one):\n${describeChats(open)}\n`);
+  return null;
 }
 
 // Named in full, or by enough of the id to be unambiguous: nobody should have to copy a UUID.
@@ -481,10 +547,16 @@ function chatByThread(chats, wanted) {
   return null;
 }
 
+const describeStarted = (started) => started.map((h) => `  ${h.cwd}  (pid ${h.pid})`).join('\n');
+
 function chats() {
-  const open = liveChats();
-  if (!open.length) return console.log('no Codex chat is open (a chat is a `codex` session a running process holds open)');
-  console.log(`${open.length} Codex chat${open.length > 1 ? 's are' : ' is'} open:\n${describeChats(open)}`);
+  const started = [];
+  const open = liveChats(started);
+  if (!open.length && !started.length) return console.log('no Codex session is open (a chat is a `codex` session a running process holds open)');
+  if (open.length) console.log(`${open.length} Codex chat${open.length > 1 ? 's are' : ' is'} open:\n${describeChats(open)}`);
+  // Open, but with nothing written in them yet: there is no thread to queue a message into.
+  if (started.length) console.log(`${started.length} Codex session${started.length > 1 ? 's are' : ' is'} open with no conversation yet — say anything there and ${started.length > 1 ? 'they become' : 'it becomes'} connectable:\n${describeStarted(started)}`);
+  if (!open.length) return;
   const peers = fs.readdirSync(dir('peers')).filter((f) => f.endsWith('.json')).map((f) => [f.replace(/\.json$/, ''), readJson(path.join(dir('peers'), f))]);
   for (const [to, rec] of peers.filter(([, r]) => r.kind === 'chat' && open.some((c) => c.thread === r.thread))) console.log(`  peer "${to}" talks to ${rec.thread}`);
 }
