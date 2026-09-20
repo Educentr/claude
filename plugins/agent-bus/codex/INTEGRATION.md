@@ -72,6 +72,11 @@ The event trace goes to `logs/<id>.jsonl` on disk. Options: `--endpoint NAME` (d
 `--cd DIR` (project root; worktrees outside it are refused), `--policy FILE` (default: the shipped
 reviewer policy; a message cannot choose one), `--exec-timeout S` (default 1800), `--max-rounds N`
 (default 5: the most review rounds any conversation may ask for).
+Stopping: Ctrl-C in the listener's terminal reaches Codex as well (the signal goes to the whole
+foreground group), so the run ends and the listener exits, releasing its endpoint. A signal sent
+to the listener alone (`kill <pid>`) is honoured **between** requests — a run in progress is not
+cancelled and finishes or hits `--exec-timeout` first.
+
 `AGENT_BUS_REPORT_THREAD=<thread id>` additionally posts a one-line "took / answered / failed"
 status into that Codex chat through `codex queue`; if that fails the reply is still delivered.
 

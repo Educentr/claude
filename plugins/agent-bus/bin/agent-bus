@@ -357,6 +357,10 @@ async function serveCodex() {
     reply(m.id, result.text, result.ok, result.kind);
     reportToChat(`${result.ok ? 'Answered' : `Failed (${result.kind})`} ${m.id} from ${m.from}.`);
     process.stderr.write(`agent-bus: ${m.id} → ${result.kind}\n`);
+    // Yield between requests, so a stop asked for while a queue is being worked through is
+    // honoured after the current request and not after the last one. A run in progress is not
+    // cancelled: spawnSync blocks until Codex ends or --exec-timeout kills it.
+    await new Promise((r) => setImmediate(r));
   }
 }
 
