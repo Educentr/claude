@@ -41,7 +41,9 @@ before(async () => {
   serverB = await serve(['--endpoint', 'codex-b', '--exec-timeout', '3']);
 });
 
-after(() => { server?.kill(); serverB?.kill(); fs.rmSync(tmp, { recursive: true, force: true }); });
+const stop = (child) => new Promise((resolve) => { if (!child || child.exitCode !== null) return resolve(); child.on('exit', resolve); child.kill(); });
+
+after(async () => { await stop(server); await stop(serverB); fs.rmSync(tmp, { recursive: true, force: true }); });
 
 test('the CLI starts where Node does not guess module types (Node 18 treats an extensionless file as CommonJS)', { skip: !process.allowedNodeEnvironmentFlags.has('--no-experimental-detect-module') && 'this Node has no such switch' }, () => {
   const r = spawnSync(process.execPath, ['--no-experimental-detect-module', CLI], { encoding: 'utf8', env });
@@ -167,6 +169,30 @@ test('round numbers are numbers: refused when sent, and refused again by the ser
   assert.match(handMade.stderr, /bad_envelope.*whole numbers/);
 });
 
+test('a limit stored under a more generous server does not outlive it: the cap is the one in force now', async () => {
+  const wt = path.join(project, 'worktrees', 'one');
+  const review = (to, max) => run(['ask', to, 'again', '--type', 'review', '--worktree', wt, '--head', HEAD, '--round', '1', '--max-rounds', String(max), '--conversation', 'ticket-generous', '--timeout', '20']);
+  const generous = await serve(['--endpoint', 'codex-cap', '--max-rounds', '10', '--exec-timeout', '3']);
+  assert.equal(review('codex-cap', 10).status, 0);
+  assert.equal(review('codex-cap', 10).status, 0);
+  await stop(generous);
+  assert.ok(!fs.existsSync(path.join(bus, 'locks', 'codex-cap.pid')), 'a server that is told to stop releases its endpoint');
+  const strict = await serve(['--endpoint', 'codex-cap', '--max-rounds', '2', '--exec-timeout', '3']);
+  try {
+    const third = review('codex-cap', 2);                 // a valid envelope for the new server — and the third review
+    assert.equal(third.status, 4);
+    assert.match(third.stderr, /round_limit.*has used its 2 review rounds/);
+  } finally { await stop(strict); }
+});
+
+test('an answer too large to deliver is a failed run: it does not use the round, and the retry gets through', () => {
+  const wt = path.join(project, 'worktrees', 'one');
+  const review = (body) => run(['ask', 'codex', body, '--type', 'review', '--worktree', wt, '--head', HEAD, '--round', '1', '--max-rounds', '1', '--conversation', 'ticket-huge', '--timeout', '20']);
+  assert.match(review('PLEASE_BE_HUGE').stderr, /reply_too_large/);
+  assert.equal(review('shorter this time').status, 0);
+  assert.match(review('one more').stderr, /round_limit/);
+});
+
 test('only a delivered review uses a round — a run that failed does not', () => {
   const wt = path.join(project, 'worktrees', 'one');
   const review = (body) => run(['ask', 'codex', body, '--type', 'review', '--worktree', wt, '--head', HEAD, '--round', '1', '--max-rounds', '1', '--conversation', 'ticket-one-round', '--timeout', '20']);
@@ -202,6 +228,17 @@ test('one server per endpoint: a second one on the same endpoint exits with the 
   const r = run(['serve-codex', '--cd', project]);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /already served by pid/);
+  assert.match(run(['unlock', 'codex']).stderr, /is running — stop that server instead/);
+});
+
+test('a lock left by a dead server is never taken over silently — it is removed by an explicit unlock', () => {
+  const dead = spawnSync(process.execPath, ['-e', '']).pid;          // has exited by now
+  fs.writeFileSync(path.join(bus, 'locks', 'codex-stale.pid'), String(dead));
+  const r = run(['serve-codex', '--cd', project, '--endpoint', 'codex-stale']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /left by pid \d+, which is not running.*agent-bus unlock codex-stale/);
+  assert.match(run(['unlock', 'codex-stale']).stdout, /removed the lock/);
+  assert.match(run(['unlock', 'codex-stale']).stdout, /is not locked/);
 });
 
 test('recover lists what was claimed and never answered, and puts one back only when told to', () => {

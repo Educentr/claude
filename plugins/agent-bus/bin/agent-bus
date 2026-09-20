@@ -8,6 +8,7 @@
 //   wait  <me>                        claim the next message for <me>, print it as JSON
 //   reply <id> [text|-]               answer a message
 //   recover <me> [--requeue <id>]     list claimed-but-unanswered messages; put one back
+//   unlock <endpoint>                 remove the lock a dead server left behind
 //   serve-codex [--endpoint codex] [--cd DIR] [--policy FILE] [--exec-timeout S] [--max-rounds N]
 //                                     answer every message for the endpoint with `codex exec`
 //   doctor                            check the mailbox, Node and the Codex CLI
@@ -145,30 +146,41 @@ function awaitAck(id) {
   die(`${id} not taken after ${timeoutS}s`, 2);
 }
 
-function claim(me, forever = false) {
+function claimOnce(me) {
   const inbox = dir('inbox', name(me, 'endpoint'));
-  for (const end = Date.now() + timeoutS * 1000; forever || Date.now() < end; sleep(1000)) {
-    for (const f of fs.readdirSync(inbox).filter((x) => x.endsWith('.json')).sort()) {
-      const claimed = path.join(dir('claimed', me), f);
-      try { fs.renameSync(path.join(inbox, f), claimed); } catch { continue; }   // somebody else took it
-      const m = readJson(claimed);
-      // The receipt means "the transport has taken it" — not that anybody has read or begun it.
-      atomic(ackFile(m.id), JSON.stringify({ by: me, ts: new Date().toISOString() }));
-      return m;
-    }
+  for (const f of fs.readdirSync(inbox).filter((x) => x.endsWith('.json')).sort()) {
+    const claimed = path.join(dir('claimed', me), f);
+    try { fs.renameSync(path.join(inbox, f), claimed); } catch { continue; }   // somebody else took it
+    const m = readJson(claimed);
+    // The receipt means "the transport has taken it" — not that anybody has read or begun it.
+    atomic(ackFile(m.id), JSON.stringify({ by: me, ts: new Date().toISOString() }));
+    return m;
   }
   return null;
 }
 
+function claim(me) {
+  for (const end = Date.now() + timeoutS * 1000; Date.now() < end; sleep(1000)) {
+    const m = claimOnce(me);
+    if (m) return m;
+  }
+  return null;
+}
+
+// A reply over the limit is a failed run, and it is one BEFORE anything counts it as delivered:
+// the sender will get exit 4, so it must not use up a review round or be reported as answered.
+function sized(id, r) {
+  const size = Buffer.byteLength(r.text);
+  if (size <= MAX_REPLY) return r;
+  const full = path.join(dir('oversize'), `${id}.txt`);
+  fs.writeFileSync(full, r.text);
+  return { ok: false, kind: 'reply_too_large', text: `the reply is ${size} bytes, the limit is ${MAX_REPLY}; the whole of it is in ${full}` };
+}
+
 function reply(id, body, ok = true, kind = 'reply') {
   name(id, 'message id');
-  const size = Buffer.byteLength(body);
-  if (size > MAX_REPLY) {
-    const full = path.join(dir('oversize'), `${id}.txt`);
-    fs.writeFileSync(full, body);
-    [ok, kind, body] = [false, 'reply_too_large', `the reply is ${size} bytes, the limit is ${MAX_REPLY}; the whole of it is in ${full}`];
-  }
-  atomic(path.join(dir('replies'), `${id}.json`), JSON.stringify({ id, ok, kind, ts: new Date().toISOString(), text: body }));
+  const r = sized(id, { ok, kind, text: body });
+  atomic(path.join(dir('replies'), `${id}.json`), JSON.stringify({ id, ok: r.ok, kind: r.kind, ts: new Date().toISOString(), text: r.text }));
 }
 
 function recover(me) {
@@ -192,22 +204,31 @@ function recover(me) {
 
 const pluginRoot = path.dirname(path.dirname(fs.realpathSync(process.argv[1])));
 
+const lockFile = (me) => path.join(dir('locks'), `${name(me, 'endpoint')}.pid`);
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
 function lockEndpoint(me) {
-  const lock = path.join(dir('locks'), `${me}.pid`);
+  const lock = lockFile(me);
   // Two servers on one endpoint would resume the same Codex thread concurrently. `wx` creates
-  // the file or fails — two simultaneous starts cannot both win. A lock left by a dead process
-  // is moved aside by rename (one mover wins) rather than deleted, so a lock somebody has JUST
-  // taken is never removed from under them.
-  for (let attempt = 0; ; attempt += 1) {
-    try { fs.writeFileSync(lock, String(process.pid), { flag: 'wx' }); break; } catch (e) { if (e.code !== 'EEXIST') throw e; }
+  // the file or fails, so two simultaneous starts cannot both win. A lock left by a dead server
+  // is NOT taken over here: two starters could both read the old pid, and the second would move
+  // away the lock the first has just taken. Clearing it is an explicit act — `agent-bus unlock`.
+  try { fs.writeFileSync(lock, String(process.pid), { flag: 'wx' }); } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
     const pid = Number(fs.readFileSync(lock, 'utf8'));
-    let alive = true;
-    try { process.kill(pid, 0); } catch { alive = false; }
-    if (alive || attempt > 0) die(`endpoint "${me}" is already served by pid ${pid}`);
-    try { fs.renameSync(lock, `${lock}.stale.${process.pid}`); fs.unlinkSync(`${lock}.stale.${process.pid}`); } catch { /* another starter moved it first */ }
+    die(pidAlive(pid) ? `endpoint "${me}" is already served by pid ${pid}` : `endpoint "${me}" has a lock left by pid ${pid}, which is not running — make sure no server is starting, then: agent-bus unlock ${me}`);
   }
   process.on('exit', () => { try { if (fs.readFileSync(lock, 'utf8') === String(process.pid)) fs.unlinkSync(lock); } catch { /* gone */ } });
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(130));
+}
+
+function unlock(me) {
+  const lock = lockFile(me);
+  if (!fs.existsSync(lock)) return console.log(`endpoint "${me}" is not locked`);
+  const pid = Number(fs.readFileSync(lock, 'utf8'));
+  if (pidAlive(pid)) die(`endpoint "${me}" is served by pid ${pid}, which is running — stop that server instead`);
+  fs.unlinkSync(lock);
+  console.log(`removed the lock pid ${pid} left on "${me}"`);
 }
 
 function reportToChat(line) {
@@ -248,7 +269,7 @@ function threadIdFrom(log) {
   return null;
 }
 
-function runCodex(m, cwd, policy, root) {
+function runCodex(m, cwd, policy, root, cap) {
   // A conversation belongs to ONE endpoint serving ONE project: the same id under another
   // endpoint, or after the server was restarted for another project, is another conversation —
   // it must not inherit the thread (its context) or share the round counter.
@@ -258,12 +279,16 @@ function runCodex(m, cwd, policy, root) {
   if (m.type === 'review') {
     // The limit is fixed by the FIRST review of the conversation. A later message cannot raise
     // it, and a round number typed by the author does not reset it.
+    // …nor does a limit stored under a more generous server outlive it: the cap is today's.
     conv.max_rounds ??= m.max_rounds;
-    if (conv.reviews >= conv.max_rounds || m.round > conv.max_rounds) return { ok: false, kind: 'round_limit', text: `conversation ${m.conversation_id} has used its ${conv.max_rounds} review rounds — list what is still disputed and take it to the user` };
+  }
+  const limit = Math.min(conv.max_rounds ?? cap, cap);
+  if (m.type === 'review' && (conv.reviews >= limit || m.round > limit)) {
+    return { ok: false, kind: 'round_limit', text: `conversation ${m.conversation_id} has used its ${limit} review rounds — list what is still disputed and take it to the user` };
   }
   const header =
     `[agent-bus] ${m.type ?? 'question'} from "${m.from}" (message ${m.id}, conversation ${m.conversation_id ?? m.id}).\n` +
-    (m.type === 'review' ? `Review round ${m.round} of ${conv.max_rounds}. Worktree: ${m.worktree}\nBase: ${m.base ?? '(not given)'}\nHead: ${m.head}\n` : '') +
+    (m.type === 'review' ? `Review round ${m.round} of ${limit}. Worktree: ${m.worktree}\nBase: ${m.base ?? '(not given)'}\nHead: ${m.head}\n` : '') +
     `Your final message is sent back as the reply: answer with it alone. Do not call agent-bus yourself and do not start a listener.\n\n`;
   // One output file per ATTEMPT. A message that is requeued after a crash runs again under the
   // same id: with a shared path, an attempt that ends without a final message would be "answered"
@@ -287,14 +312,15 @@ function runCodex(m, cwd, policy, root) {
   if (r.error?.code === 'ETIMEDOUT') result = { ok: false, kind: 'exec_timeout', text: `codex did not finish in ${opts.execTimeout}s; trace: ${log}` };
   // A non-zero exit with an output file is a broken run, not a review that happens to be short.
   else if (r.error || r.status !== 0 || !answer) result = { ok: false, kind: 'exec_failed', text: `codex exited ${r.status ?? r.error?.code}${answer ? '' : ' with no final message'}; trace: ${log}` };
-  else result = { ok: true, kind: 'reply', text: answer };
-  // Only a review that was actually delivered uses a round: five login failures are not five reviews.
+  else result = sized(m.id, { ok: true, kind: 'reply', text: answer });
+  // Only a review that was actually delivered uses a round: five login failures — or an answer
+  // too large to deliver — are not reviews.
   if (m.type === 'review' && result.ok) conv.reviews += 1;
   atomic(convFile, JSON.stringify(conv));
   return result;
 }
 
-function serveCodex() {
+async function serveCodex() {
   const me = name(opts.endpoint, '--endpoint');
   const root = fs.realpathSync(opts.cd);
   const policyFile = opts.policy ?? path.join(pluginRoot, 'policies', 'reviewer.md');
@@ -305,7 +331,10 @@ function serveCodex() {
   lockEndpoint(me);
   process.stderr.write(`agent-bus: serving "${me}" from ${BUS}; project root ${root}; policy ${policyFile}\n`);
   for (;;) {
-    const m = claim(me, true);
+    // Polled from the event loop, not in a blocking sleep: a process that never yields never
+    // runs its signal handlers, and the server could not be stopped (or release its lock).
+    const m = claimOnce(me);
+    if (!m) { await new Promise((r) => setTimeout(r, 1000)); continue; }
     if (m.type === 'status' || m.expects_reply === false || /^\[agent-bus:ack\]/.test(m.text ?? '')) continue;   // information only: no run, no reply
     let cwd = root;
     const problem = envelopeProblem(m, cap);
@@ -324,7 +353,7 @@ function serveCodex() {
     }
     process.stderr.write(`agent-bus: ${m.id} ${m.type ?? 'question'} from ${m.from}\n`);
     reportToChat(`Took ${m.type ?? 'question'} ${m.id} from ${m.from}.`);
-    result ??= runCodex(m, cwd, policy, root);
+    result ??= runCodex(m, cwd, policy, root, cap);
     reply(m.id, result.text, result.ok, result.kind);
     reportToChat(`${result.ok ? 'Answered' : `Failed (${result.kind})`} ${m.id} from ${m.from}.`);
     process.stderr.write(`agent-bus: ${m.id} → ${result.kind}\n`);
@@ -357,7 +386,8 @@ switch (cmd) {
   }
   case 'reply': reply(a ?? die('usage: reply <id> [text|-]'), text(rest)); break;
   case 'recover': recover(a ?? die('usage: recover <me> [--requeue <id>]')); break;
-  case 'serve-codex': serveCodex(); break;
+  case 'unlock': unlock(a ?? die('usage: unlock <endpoint>')); break;
+  case 'serve-codex': serveCodex().catch((e) => die(e.stack ?? String(e))); break;
   case 'doctor': doctor(); break;
-  default: die('usage: agent-bus send|ask|await|acked|wait|reply|recover|serve-codex|doctor … (see the header of this file)');
+  default: die('usage: agent-bus send|ask|await|acked|wait|reply|recover|unlock|serve-codex|doctor … (see the header of this file)');
 }

@@ -109,8 +109,9 @@ time because an endpoint handles its messages one by one. For full isolation use
 | exit 4 `exec_timeout` | Codex did not finish within `--exec-timeout` | read `logs/<id>.jsonl`; raise the deadline or narrow the request |
 | exit 4 `exec_failed` | non-zero exit or no final message | same trace; check `codex login status` |
 | exit 4 `bad_worktree` | the worktree is not under the server's `--cd` | start the server at a common parent |
-| exit 4 `round_limit` | the conversation has used its rounds (the limit is fixed by its first review; failed runs do not count) | take the open points to the user |
+| exit 4 `round_limit` | the conversation has used its rounds (the limit is fixed by its first review and never above the running server's `--max-rounds`; failed runs, an oversize reply included, do not count) | take the open points to the user |
 | exit 4 `bad_envelope` | not a valid message: a round that is not a number, `max_rounds` over the server's cap, a short SHA | fix the request; the text says which field |
+| `has a lock left by pid …, which is not running` | a server was killed and left its lock | make sure no server for that endpoint is starting, then `agent-bus unlock <endpoint>` — a stale lock is never taken over automatically |
 | server died mid-message | the message sits in `claimed/` with no reply | `agent-bus recover <endpoint>` lists it; `--requeue <id>` runs it **again** — a person decides |
 | chat report failed | `codex queue` unavailable | ignored by design; the reply is in the mailbox |
 
@@ -124,7 +125,8 @@ and `/tmp/agent-bus` may fail the new ownership and permission check. Switch bot
 1. Let every request in flight be answered (`agent-bus await <id>` on the asking side).
 2. Stop the old listener (Ctrl-C).
 3. Move the old file away — the installer will not overwrite a regular file —
-   `mv ~/.local/bin/agent-bus ~/.local/bin/agent-bus.old`, then run `codex/install.sh`.
+   `mv ~/.local/bin/agent-bus ~/.local/bin/agent-bus.old`, then, from the root of the clone, run
+   `plugins/agent-bus/codex/install.sh`.
 4. Start the new listener: `agent-bus serve-codex --cd /abs/path/to/project`.
 5. Enable the plugin in Claude Code and start a new session, so both sides use the default mailbox.
 

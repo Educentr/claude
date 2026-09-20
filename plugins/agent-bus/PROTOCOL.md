@@ -18,7 +18,8 @@ acks/<id>.json                  read receipt: the TRANSPORT has taken the messag
 replies/<id>.json               the reply to message <id>
 conversations/<endpoint>.<project-hash>/<conv>.json
                                 serve-codex state: Codex thread id, rounds used, the round limit
-locks/<endpoint>.pid            the one server of an endpoint (created atomically)
+locks/<endpoint>.pid            the one server of an endpoint (created atomically; a stale one is
+                                removed only by `agent-bus unlock <endpoint>`)
 logs/<id>.<attempt>.jsonl       serve-codex: the event trace of one attempt
 oversize/<id>.txt               a reply that was over the limit, whole
 ```
@@ -101,7 +102,7 @@ never send it again** — that would run it twice. The run has its own deadline
 | message text | 64 KiB | `send` fails (exit 5). Put logs in a file both sides can read; send the path |
 | reply text | 256 KiB | reply becomes `reply_too_large`, the whole text kept in `oversize/` |
 | reply chain depth | 3 (`$AGENT_BUS_DEPTH`) | `send` refuses (exit 3) — two agents cannot ping-pong forever |
-| review rounds | `max_rounds` of the conversation's **first** review (default 5), never above the server's `--max-rounds` (default 5); whole numbers 1–99 | `round_limit`. A later message cannot raise the limit, and a retyped round number does not reset it. Only a **delivered** review uses a round — a run that failed does not |
+| review rounds | `max_rounds` of the conversation's **first** review (default 5), never above the server's `--max-rounds` (default 5); whole numbers 1–99 | `round_limit`. A later message cannot raise the limit, a retyped round number does not reset it, and a limit stored under a more generous server is cut to the cap in force now. Only a **delivered** review uses a round — a run that failed, or an answer too large to deliver, does not |
 
 ## Review format
 
