@@ -806,7 +806,7 @@ test('a session of the current CLI is found by the lock it holds, with no rollou
   await close(chat); await close(sub);
 });
 
-test('a Codex that is open but has not been spoken to is said out loud, not answered with a background one', { skip: lsof.error ? 'lsof is not installed' : false }, async () => {
+test('a Codex that is open but has not been spoken to is said out loud, not answered with a background one', storeTests, async () => {
   // Open: it holds a lock. Never used: no thread store row and no rollout — nothing to queue into.
   const fresh = fakeLockedThread('33333333-3333-7333-8333-333333333333');
   assert.match(run(['chats']).stdout, new RegExp(`Codex sessions? (is|are) open with no conversation yet[\\s\\S]*${project}  \\(pid ${fresh.holder.pid}\\)`));
@@ -837,6 +837,7 @@ test('one session, one thread identified and one not: it is still a Codex that m
 
 test('threads that could not be identified are not "nothing was said there" — and no agent is started on them', storeTests, async () => {
   const fresh = fakeLockedThread('66666666-6666-7666-8666-666666666666');
+  fakeThreadStore([]);                       // the store exists; it is the reading of it that fails
   // sqlite3 is gone from PATH: the store cannot be consulted at all.
   const bin = path.join(tmp, 'no-sqlite');
   fs.mkdirSync(bin, { recursive: true });
@@ -845,7 +846,7 @@ test('threads that could not be identified are not "nothing was said there" — 
   assert.match(run(['chats'], { extraEnv: blind }).stdout, /threads could not be identified \(the Codex thread store could not be read/);
   const r = run(['connect', 'codex-unreadable', '--cd', project], { extraEnv: blind });
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /could not be told[\s\S]*Name the chat with --thread/);
+  assert.match(r.stderr, /could not be told[\s\S]*--thread would go through the same lookup[\s\S]*--headless/);
   assert.doesNotMatch(r.stderr, /nothing has been said/, 'it must not claim a conversation is missing when it could not look');
   assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-unreadable.json')));
   await close(fresh);

@@ -335,7 +335,7 @@ function liveHolders() {
     const line = (r.stdout ?? '').split('\n').filter((l) => l[0] === 'n').pop();
     if (line) { held.cwd = line.slice(1); continue; }
     if (alive(pid) === false) { holders.delete(pid); continue; }      // it exited while we were looking
-    die(`could not tell which directory the open Codex session pid ${pid} is working in${r.stderr?.trim() ? ` (${r.stderr.trim().split('\n')[0]})` : ''} — an open chat may have been missed, so nothing was concluded. Name the chat with --thread, or start the peer in the background: agent-bus connect <peer> --headless`);
+    die(`could not tell which directory the open Codex session pid ${pid} is working in${r.stderr?.trim() ? ` (${r.stderr.trim().split('\n')[0]})` : ''} — an open chat may have been missed, so nothing was concluded. Fix that (every lookup here goes through lsof, --thread included), or start the peer in the background: agent-bus connect <peer> --headless`);
   }
   return [...holders.values()];
 }
@@ -551,7 +551,7 @@ function chooseChat(to, root) {
   if (here.length) {
     die(read
       ? `a Codex is open for ${root}, but nothing has been said in it yet, so it has no conversation to deliver into:\n${describeStarted(here)}\nType anything there (even "hi"), then: agent-bus connect ${to} --cd ${root}`
-      : `a Codex is open for ${root}, but what its threads are could not be told — ${storeProblem()}:\n${describeStarted(here)}\nName the chat with --thread <id>, or have a separate one answer in the background: agent-bus connect ${to} --cd ${root} --headless`);
+      : `a Codex is open for ${root}, but what its threads are could not be told — ${storeProblem()}:\n${describeStarted(here)}\nFix that and connect again (--thread would go through the same lookup and fare no better), or have a separate Codex answer in the background: agent-bus connect ${to} --cd ${root} --headless`);
   }
   if (open.length) process.stderr.write(`agent-bus: no Codex chat is open for ${root}; these are open elsewhere and were not taken (--thread names one):\n${describeChats(open)}\n`);
   return null;
