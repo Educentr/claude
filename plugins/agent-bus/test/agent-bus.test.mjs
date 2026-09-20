@@ -445,11 +445,13 @@ function fakeLockedThread(thread) {
 }
 
 // The rows Codex would have written for those threads once they had a turn.
+const sqlite = spawnSync('sqlite3', ['-version'], { encoding: 'utf8' });
 function fakeThreadStore(rows) {
   const db = path.join(codexHome, 'state_5.sqlite');
   const sql = ['create table if not exists threads (id TEXT PRIMARY KEY, cwd TEXT, source TEXT, thread_source TEXT, name TEXT, title TEXT, preview TEXT, first_user_message TEXT);']
     .concat(rows.map((r) => `insert or replace into threads values ('${r.id}','${r.cwd}','${r.source ?? 'cli'}','${r.thread_source ?? ''}','${r.name ?? ''}','','','');`)).join('\n');
-  return spawnSync('sqlite3', [db], { input: sql, encoding: 'utf8' }).status === 0;
+  const r = spawnSync('sqlite3', [db], { input: sql, encoding: 'utf8' });
+  assert.equal(r.status, 0, `the test store could not be built: ${r.stderr}`);   // never a quiet pass
 }
 
 // A process that keeps those files open, as a running Codex does, until the test closes it.
@@ -785,13 +787,15 @@ test('disconnect signals the listener this peer stands for, never whoever holds 
   assert.match(run(['stop', 'codex-replaced']).stdout, /stopped the server/);
 });
 
-test('a session of the current CLI is found by the lock it holds, with no rollout file at all', { skip: lsof.error ? 'lsof is not installed' : false }, async () => {
+const storeTests = { skip: lsof.error ? 'lsof is not installed' : sqlite.error ? 'sqlite3 is not installed' : false };
+
+test('a session of the current CLI is found by the lock it holds, with no rollout file at all', storeTests, async () => {
   const chat = fakeLockedThread('11111111-1111-7111-8111-111111111111');
   const sub = fakeLockedThread('22222222-2222-7222-8222-222222222222');      // its subagent's thread
-  if (!fakeThreadStore([
+  fakeThreadStore([
     { id: chat.thread, cwd: project, thread_source: 'user', name: 'Чинить healer' },
     { id: sub.thread, cwd: project, thread_source: 'subagent' },
-  ])) { await close(chat); await close(sub); return; }                        // no sqlite3 here
+  ]);
   const listed = run(['chats']);
   assert.match(listed.stdout, /11111111-1111/, 'the chat is found through its lock');
   assert.match(listed.stdout, /^ +Чинить healer$/m, 'and named by what the thread store calls it');
@@ -811,4 +815,51 @@ test('a Codex that is open but has not been spoken to is said out loud, not answ
   assert.match(r.stderr, /a Codex is open for .*nothing has been said in it yet[\s\S]*Type anything there/);
   assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-fresh.json')), 'and no background Codex was started instead');
   await close(fresh);
+});
+
+test('one session, one thread identified and one not: it is still a Codex that may hold a chat', storeTests, async () => {
+  // A single process holding both, as a real session does: the subagent's thread is in the store,
+  // the main one is not yet. Counting the holder as "not a chat" because SOMETHING was identified
+  // would report an open Codex as absent — and start a background one next to it.
+  const main = path.join(codexHome, 'thread-writer-locks', '44444444-4444-7444-8444-444444444444.lock');
+  const sub = path.join(codexHome, 'thread-writer-locks', '55555555-5555-7555-8555-555555555555.lock');
+  fs.mkdirSync(path.dirname(main), { recursive: true });
+  for (const f of [main, sub]) fs.writeFileSync(f, '');
+  const holder = hold([main, sub]);
+  fakeThreadStore([{ id: '55555555-5555-7555-8555-555555555555', cwd: project, thread_source: 'subagent' }]);
+  assert.match(run(['chats']).stdout, new RegExp(`no conversation yet[\\s\\S]*\\(pid ${holder.pid}\\)`));
+  const r = run(['connect', 'codex-mixed', '--cd', project]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /nothing has been said in it yet/);
+  assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-mixed.json')));
+  await close({ holder });
+});
+
+test('threads that could not be identified are not "nothing was said there" — and no agent is started on them', storeTests, async () => {
+  const fresh = fakeLockedThread('66666666-6666-7666-8666-666666666666');
+  // sqlite3 is gone from PATH: the store cannot be consulted at all.
+  const bin = path.join(tmp, 'no-sqlite');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'sqlite3'), '#!/bin/sh\necho "cannot open database" >&2\nexit 1\n', { mode: 0o755 });
+  const blind = { PATH: `${bin}:${env.PATH}` };
+  assert.match(run(['chats'], { extraEnv: blind }).stdout, /threads could not be identified \(the Codex thread store could not be read/);
+  const r = run(['connect', 'codex-unreadable', '--cd', project], { extraEnv: blind });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /could not be told[\s\S]*Name the chat with --thread/);
+  assert.doesNotMatch(r.stderr, /nothing has been said/, 'it must not claim a conversation is missing when it could not look');
+  assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-unreadable.json')));
+  await close(fresh);
+});
+
+test('a working directory that could not be read is not an absent chat either', { skip: lsof.error ? 'lsof is not installed' : false }, async () => {
+  const chat = fakeLockedThread('77777777-7777-7777-8777-777777777777');
+  // lsof answers the directory walk but fails the per-process question.
+  const bin = path.join(tmp, 'half-lsof');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'lsof'), `#!/bin/sh\nfor a in "$@"; do [ "$a" = "cwd" ] && { echo "lsof: WARNING: no access" >&2; exit 1; }; done\nexec ${lsof.error ? 'false' : spawnSync('which', ['lsof'], { encoding: 'utf8' }).stdout.trim()} "$@"\n`, { mode: 0o755 });
+  const r = run(['connect', 'codex-nocwd', '--cd', project], { extraEnv: { PATH: `${bin}:${env.PATH}` } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /could not tell which directory the open Codex session pid \d+ is working in/);
+  assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-nocwd.json')), 'and no background Codex was started');
+  await close(chat);
 });
