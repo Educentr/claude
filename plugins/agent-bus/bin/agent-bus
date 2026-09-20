@@ -497,7 +497,12 @@ function unregister(to) {
   const rec = fs.existsSync(peerFile(to)) ? readJson(peerFile(to)) : null;
   if (!rec) return console.log(`"${to}" is not connected`);
   fs.unlinkSync(peerFile(to));
-  if (rec.kind === 'headless') return () => stop(to);
+  // Signalled here, inside the registration, and only if the endpoint is still served by the
+  // listener this peer stands for; the waiting is what the caller does afterwards.
+  if (rec.kind === 'headless') {
+    const held = signalEndpoint(to, rec.pid);
+    return held ? () => awaitStop(to, held) : null;
+  }
   console.log(`disconnected "${to}" — the Codex chat itself is untouched; anything already queued into it stays there`);
   return null;
 }
@@ -739,22 +744,35 @@ async function serveDetached(endpoint, extra) {
   die(`the server for "${me}" did not start — see ${log}:\n${tail}`);
 }
 
-function stop(me) {
+// Reading the lock and signalling it belong together, under the registration: between the two,
+// that listener could have exited and another one taken the endpoint — and the signal would go to
+// the new one, which is somebody else's. `was` is the listener a caller believes it is stopping
+// (a peer record's pid); a lock held by anyone else is not theirs to signal.
+function signalEndpoint(me, was) {
   const held = readLock(me);
-  if (!held) return console.log(`endpoint "${me}" is not served`);
+  if (!held) { console.log(`endpoint "${me}" is not served`); return null; }
   if (held.malformed) die(`the lock of "${me}" (${lockFile(me)}) does not hold a pid — nothing was signalled; look at it, then: agent-bus unlock ${me} --force`);
+  if (was && held.pid !== was) die(`endpoint "${me}" is served by pid ${held.pid}, not by the pid ${was} that was connected here — nothing was signalled. Look with: agent-bus doctor`);
   // A signal goes only to a process that is PROVABLY that server: the pid in a lock left by a
   // crash may belong to anything by now — another endpoint's listener included.
   const state = holder(held);
   if (state === 'gone') die(`endpoint "${me}" has a lock left by pid ${held.pid}, which is not running that server any more — nothing was signalled; agent-bus unlock ${me}`);
   if (state === 'unknown') die(byHand(me, held));
   process.kill(held.pid, 'SIGTERM');
-  // Honoured between requests: a run in progress finishes (or hits --exec-timeout) first.
+  return held;
+}
+
+// Only the process that was signalled, identified by pid AND start time. Waiting is all this
+// does, so it happens outside the registration: a request in flight finishes first, which can
+// take as long as --exec-timeout.
+function awaitStop(me, held) {
   for (const end = Date.now() + timeoutS * 1000; Date.now() < end; sleep(200)) {
     if (holder(held) === 'gone') return console.log(`stopped the server of "${me}" (pid ${held.pid})`);   // confirmed, not assumed
   }
   die(`pid ${held.pid} was told to stop, but its exit is not confirmed after ${timeoutS}s — it finishes the request in progress first; check with: agent-bus doctor`, 2);
 }
+
+const stop = async (me) => { const held = await registering(me, () => signalEndpoint(me)); if (held) awaitStop(me, held); };
 
 // ---- install ----------------------------------------------------------------------------------
 
@@ -959,7 +977,7 @@ switch (cmd) {
   case 'chats': chats(); break;
   case 'connect': connect(a ?? 'codex').catch(fatal); break;
   case 'disconnect': disconnect(name(a ?? 'codex', 'peer')).catch(fatal); break;
-  case 'stop': stop(a ?? 'codex'); break;
+  case 'stop': stop(a ?? 'codex').catch(fatal); break;
   case 'install': install(); break;
   case 'doctor': doctor(); break;
   default: die('usage: agent-bus connect|disconnect|chats|send|ask|await|acked|wait|reply|recover|unlock|serve-codex|stop|install|doctor … (see the header of this file)');

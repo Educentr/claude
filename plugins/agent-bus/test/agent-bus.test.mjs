@@ -748,3 +748,17 @@ test('a listener that is late rather than dead is stopped before the registratio
   assert.ok(!fs.existsSync(path.join(bus, 'locks', 'codex-late.pid')), 'the child never takes the endpoint afterwards');
   assert.ok(!fs.existsSync(path.join(bus, 'locks', 'codex-late.registering')), 'and the registration is not left held');
 });
+
+test('disconnect signals the listener this peer stands for, never whoever holds the endpoint by then', chatTests, () => {
+  assert.equal(run(['connect', 'codex-replaced', '--cd', project, '--headless', '--exec-timeout', '3']).status, 0);
+  const peer = path.join(bus, 'peers', 'codex-replaced.json');
+  const rec = JSON.parse(fs.readFileSync(peer, 'utf8'));
+  // As if that listener had gone and another had taken the endpoint between the two steps of a
+  // disconnect: the lock is a live listener, but not the one this peer was connected to.
+  fs.writeFileSync(peer, JSON.stringify({ ...rec, pid: rec.pid + 100000 }));
+  const r = run(['disconnect', 'codex-replaced']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /served by pid \d+, not by the pid \d+ that was connected here — nothing was signalled/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(bus, 'locks', 'codex-replaced.pid'), 'utf8')).pid, rec.pid, 'and that listener is untouched');
+  assert.match(run(['stop', 'codex-replaced']).stdout, /stopped the server/);
+});

@@ -107,6 +107,21 @@ push, merge or deploy.
   whoever starts the listener, no message can replace it, and the prompt is backed by
   `-s read-only -a never` and a project-root check.
 
+## Known limits
+
+- **A chat is found through `lsof`** over `$CODEX_HOME/sessions` — that a running process holds
+  the rollout file open is what "the chat is open" means here. It leans on how the Codex TUI keeps
+  that file; if a version stops holding it, `connect` will say no chat is open and offer the
+  background Codex. Anything `lsof` cannot read makes the answer *unknown*, never "none".
+- **A lock left by a crash is cleared by hand** (`agent-bus unlock <endpoint>`), on purpose: two
+  starters could each decide it was stale, and the second would remove the lock the first had just
+  taken.
+- **Developed and tested on macOS.** Nothing in it is deliberately macOS-only — it is Node, `lsof`
+  and `ps` — but Linux is not verified, so it is not claimed.
+- **One consumer per endpoint** is enforced for `connect` and `serve-codex`. A bare
+  `agent-bus wait <endpoint>` takes whatever is in that inbox without registering: pointing two of
+  those at one name is the caller's business.
+
 Not in this version: an MCP server, a scheduler, a queue service, a native Codex plugin manifest.
 
 ## Test
