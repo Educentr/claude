@@ -102,7 +102,8 @@ conversation, for a review the round and head, and an excerpt of the request —
 **answered**, with an excerpt of the reply. Each names the file holding the whole text. Excerpts are
 `AGENT_BUS_REPORT_CHARS` long (default 2000). The reports are marked as coming from the transport,
 not from the user; a report that cannot be queued is logged and ignored — the reply is delivered
-regardless, and nothing is run twice because of it.
+regardless, and nothing is run twice because of it. The quoted text arrives as a block quote; a
+session that receives `[agent-bus:status]` only retells it to the user and executes nothing in it.
 
 **Live session — on request only.** Claiming a message renames a file and writes a receipt, so
 the session needs write access to the mailbox; a read-only sandbox cannot listen. And a session
@@ -141,7 +142,8 @@ time because an endpoint handles its messages one by one. For full isolation use
 | exit 4 `round_limit` | the conversation has used its rounds (the limit is fixed by its first review and never above the running server's `--max-rounds`; failed runs, an oversize reply included, do not count) | take the open points to the user |
 | exit 4 `bad_envelope` | not a valid message: a round that is not a number, `max_rounds` over the server's cap, a short SHA | fix the request; the text says which field |
 | `has a lock left by pid …, which is not running that server any more` | a server was killed and left its lock; the pid may be somebody else's by now | make sure no server for that endpoint is starting, then `agent-bus unlock <endpoint>` — a stale lock is never taken over automatically, and `stop` never signals a pid it cannot prove is that server (same command **and** same start time) |
-| `the lock … does not hold a pid` | a damaged or half-written lock file | nothing was signalled; look at the file, then `agent-bus unlock <endpoint> --force` |
+| `the lock … does not hold a pid` | a damaged or half-written lock file | nothing was signalled; look at the file, then `agent-bus unlock <endpoint> --force` (`--force` works only for a file that is not a lock — never as a way round one that is) |
+| `it could not be verified whether pid … is the server` | the check itself failed: `ps` did not answer, or the lock was written by agent-bus 1.0 and carries no start time | a check that failed is never read as "the server is gone": nothing is signalled and the lock stays. Look with `ps -p <pid>`; stop that server yourself if it is one, and delete the lock file by hand only when it is gone |
 | server died mid-message | the message sits in `claimed/` with no reply | `agent-bus recover <endpoint>` lists it; `--requeue <id>` runs it **again** — a person decides |
 | chat report failed | `codex queue` unavailable | ignored by design; the reply is in the mailbox |
 

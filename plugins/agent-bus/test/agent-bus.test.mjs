@@ -327,6 +327,40 @@ test('stop never signals a process it cannot prove is that server: an empty lock
   } finally { bystander.kill('SIGKILL'); }
 });
 
+test('a check that FAILED is not "the server is gone": no signal and no unlock on an old-format lock, a deaf ps, or another time zone', async () => {
+  const lock = (me) => path.join(bus, 'locks', `${me}.pid`);
+  // 1. A lock written by 1.0 (a bare pid) whose pid now belongs to the listener of ANOTHER endpoint.
+  fs.writeFileSync(lock('codex-legacy'), String(serverB.pid));
+  for (const cmd of ['stop', 'unlock']) {
+    const r = run([cmd, 'codex-legacy']);
+    assert.equal(r.status, 1, cmd);
+    assert.match(r.stderr, /could not be verified .* nothing was signalled or removed/);
+  }
+  assert.equal(serverB.exitCode, null, 'the other endpoint\'s listener is still running');
+  assert.ok(fs.existsSync(lock('codex-legacy')));
+  fs.unlinkSync(lock('codex-legacy'));
+
+  // 2. ps cannot be run at all, and the owner is alive: the real lock of a real server stays.
+  const deafPs = { PATH: path.join(tmp, 'no-such-dir') };
+  for (const cmd of ['stop', 'unlock']) {
+    const r = run([cmd, 'codex-b'], { extraEnv: deafPs });
+    assert.equal(r.status, 1, cmd);
+    assert.match(r.stderr, /could not be verified/);
+  }
+  assert.equal(serverB.exitCode, null);
+  assert.equal(JSON.parse(fs.readFileSync(lock('codex-b'), 'utf8')).pid, serverB.pid);
+  // …and --force is for a file that is not a lock, never a way round one that is.
+  assert.match(run(['unlock', 'codex-b', '--force'], { extraEnv: deafPs }).stderr, /could not be verified/);
+  assert.match(run(['unlock', 'codex-b', '--force']).stderr, /is running — stop that server instead/);
+
+  // 3. Started under one time zone and locale, stopped under another: still the same launch.
+  const abroad = await serve(['--endpoint', 'codex-tz', '--exec-timeout', '3'], project, { TZ: 'America/New_York', LC_ALL: 'C' });
+  const stopped = run(['stop', 'codex-tz', '--timeout', '20'], { extraEnv: { TZ: 'Asia/Tokyo', LC_ALL: 'ru_RU.UTF-8' } });
+  await stop(abroad);
+  assert.match(stopped.stdout, /stopped the server of "codex-tz"/);
+  assert.ok(!fs.existsSync(lock('codex-tz')));
+});
+
 test('uninstall removes only the links install makes — not any link that happens to point under a wide AGENT_BUS_HOME', () => {
   const wide = path.join(tmp, 'wide-home');                       // think AGENT_BUS_HOME=$HOME
   const dirs = { AGENT_BUS_HOME: wide, AGENT_BUS_BIN_DIR: path.join(tmp, 'wide-bin'), AGENT_BUS_CODEX_SKILLS_DIR: path.join(tmp, 'wide-skills') };
