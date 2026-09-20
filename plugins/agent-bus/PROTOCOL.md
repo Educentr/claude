@@ -24,10 +24,14 @@ Mailbox: `$AGENT_BUS_DIR`, default `~/.local/state/agent-bus`. Both sides must u
 | **background** (`--headless`) | nothing was open, or the user asked for it | `serve-codex` polls the inbox and runs `codex exec` read-only | nobody, unless `AGENT_BUS_REPORT_THREAD` reports it into a chat |
 
 A chat is one a **running process holds open** (`lsof` over `$CODEX_HOME/sessions`, `originator:
-codex-tui`, `source: "cli"` — a subagent's rollout and an `exec` run are not chats). The rollout
-file of a closed session stays on disk and `codex queue` still accepts it, so being open is
-checked before every delivery: a message that cannot be delivered is **withdrawn** from the inbox
-and `send` exits **6** — it is never left for whatever claims that endpoint next.
+codex-tui`, `source: "cli"` — a subagent's rollout and an `exec` run are not chats; an `lsof` that
+could not walk the tree is "unknown", never "none"). The rollout file of a closed session stays on
+disk and `codex queue` still accepts it, so being open is checked before every delivery, and a
+message that provably did not get in is **removed again** and `send` exits **6**.
+
+`agent-bus chats` lists the open chats with the last thing the user typed in each — that, not the
+id, is what a person recognises a chat by. `--thread` takes the id, or enough of its beginning to
+be unambiguous.
 
 A chat answers with the ordinary `agent-bus reply <id> -`, which writes into the mailbox. Codex
 runs under `workspace-write`, so the mailbox has to be a writable root for it:

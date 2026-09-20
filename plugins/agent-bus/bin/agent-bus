@@ -5,6 +5,7 @@
 //   connect [peer] [--cd DIR] [--thread ID] [--headless]
 //                                     open the channel to <peer> (default codex): the Codex chat open
 //                                     for this project if there is one, a background Codex if not
+//   chats                             the Codex chats that are open, and what was last said in each
 //   disconnect [peer]                 close it: forget the chat, stop the background Codex
 //   send  <to> [text|-] [opts]        queue a message, print its id
 //   ask   <to> [text|-] [opts]        send and wait for the reply      (exit 2: no reply yet)
@@ -225,15 +226,20 @@ function reply(id, body, ok = true, kind = 'reply') {
 
 function recover(me) {
   const held = dir('claimed', name(me, 'endpoint'));
+  const chatPeer = liveRecord(me);
   if (opts.requeue) {
     const f = `${name(opts.requeue, '--requeue')}.json`;
     if (readReply(opts.requeue)) die(`${opts.requeue} already has a reply — nothing to recover`);
+    // Requeueing means "put it back in the inbox for a listener". A chat has no inbox: the message
+    // is already in front of the person, and moving it would hide it from them instead.
+    if (chatPeer) die(`"${me}" is a Codex chat (${chatPeer.thread}): its messages are delivered, not queued. Ask in that chat, or send it again as a new message.`);
     fs.renameSync(path.join(held, f), path.join(dir('inbox', me), f));
     try { fs.unlinkSync(ackFile(opts.requeue)); } catch { /* no receipt yet */ }
     return console.log(`requeued ${opts.requeue} for ${me}`);
   }
   // Listing only. Whether a claimed message was half-done is for a person to judge: putting it
   // back runs it again, and nothing here can tell that the first run did not already act.
+  if (chatPeer) console.log(`"${me}" is Codex chat ${chatPeer.thread}: these were delivered to it and not answered yet — which is what an unanswered question looks like while somebody is still thinking.`);
   for (const f of fs.readdirSync(held).sort()) {
     const m = readJson(path.join(held, f));
     if (m.expects_reply !== false && !readReply(m.id)) console.log(`${m.id}\t${m.type ?? 'question'}\tfrom ${m.from}\t${m.ts}`);
@@ -249,6 +255,23 @@ function recover(me) {
 // of the CLI does not care, and neither does the protocol.
 const peerFile = (to) => path.join(dir('peers'), `${name(to, 'peer')}.json`);
 
+// Taking an endpoint — as a chat or as a listener — is read-then-write: look for a peer, look for
+// a lock, then write one. Two of those at once would each see the endpoint free. mkdir is the
+// atomic step that serialises them; it is held for the registration only, never for a whole
+// conversation. A listener started BY a connect inherits the held mutex through the environment,
+// or the parent would wait for a lock the child cannot take.
+function registering(me, fn) {
+  if (process.env.AGENT_BUS_REG_HELD === me) return fn();
+  const busy = path.join(dir('locks'), `${name(me, 'endpoint')}.registering`);
+  try { fs.mkdirSync(busy); } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
+    die(`another connect or listener is taking endpoint "${me}" right now — let it finish, then look with: agent-bus doctor`);
+  }
+  const clean = () => { try { fs.rmdirSync(busy); } catch { /* gone */ } };
+  process.on('exit', clean);
+  try { return fn(); } finally { clean(); }
+}
+
 function liveRecord(to) {
   try {
     const rec = readJson(peerFile(to));
@@ -259,16 +282,19 @@ function liveRecord(to) {
 // Every rollout file a running Codex holds open: {thread, cwd, pid, file}. A chat the user
 // started themselves is `originator: codex-tui` with `source: "cli"` — a subagent's own rollout
 // (source: {subagent: …}) and every `codex exec` run are not chats anybody is watching.
+// Which files a process holds open is the only honest proof that a chat is still being used: a
+// rollout file lingers after the session is closed, and a message queued into a closed one is
+// read by nobody. An empty list therefore has to mean "there are none", so anything that makes
+// the walk incomplete — lsof missing, a directory it could not open — raises instead of counting
+// as an absence. lsof exits 1 both when it found nothing and when it complained, so the stderr it
+// wrote is what tells the two apart.
 function liveChats() {
   const sessions = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions');
   if (!fs.existsSync(sessions)) return [];
   // +D walks the tree; -F gives one field per line (p<pid>, n<name>), which no path can confuse.
   const r = spawnSync('lsof', ['-F', 'pn', '+D', sessions], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
-  // Which files a process holds open is the only honest proof that a chat is still being used: a
-  // rollout file lingers after the session is closed, and a message queued into a closed one is
-  // read by nobody. So a missing lsof is an error, never "no chat is open".
   if (r.error) die(`lsof is needed to tell which Codex chats are open, and it could not be run (${r.error.code ?? r.error.message}) — start the peer in the background instead: agent-bus connect <peer> --headless`);
-  if (!r.stdout) return [];
+  if (r.stderr.trim()) die(`lsof could not read all of ${sessions}, so an open Codex chat may have been missed:\n${r.stderr.trim()}\nFix that, name the chat with --thread, or start the peer in the background: agent-bus connect <peer> --headless`);
   const out = [];
   let pid = null;
   for (const line of r.stdout.split('\n')) {
@@ -280,6 +306,38 @@ function liveChats() {
     }
   }
   return out;
+}
+
+// What the person would recognise the chat by: the last thing they typed in it. Their own turns
+// are `message` items with role `user`; the ones the tooling writes (the AGENTS.md preamble, the
+// output of a shell command they ran) are not what anybody remembers a chat by. Only the tail of
+// the file is read — a long session is megabytes.
+function chatLabel(file) {
+  let text = '';
+  try {
+    const { size } = fs.statSync(file);
+    const from = Math.max(0, size - 512 * 1024);
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(size - from);
+    fs.readSync(fd, buf, 0, buf.length, from);
+    fs.closeSync(fd);
+    text = buf.toString('utf8');
+  } catch { return null; }
+  for (const line of text.split('\n').reverse()) {
+    let p;
+    try { p = JSON.parse(line).payload; } catch { continue; }
+    if (p?.type !== 'message' || p.role !== 'user') continue;
+    const said = (Array.isArray(p.content) ? p.content : []).map((c) => c.text ?? '').join(' ').trim();
+    if (!said || said.startsWith('#') || said.startsWith('<') || said.startsWith('[agent-bus')) continue;
+    const one = said.split('\n').find((l) => l.trim()) ?? '';
+    return one.length > 70 ? `${one.slice(0, 70)}…` : one;
+  }
+  return null;
+}
+
+// The chats, as a person picks between them: what was last said in each, and where it runs.
+function describeChats(chats) {
+  return chats.map((c) => `  ${c.thread}\n      ${c.cwd}${chatLabel(c.file) ? `\n      last said there: ${chatLabel(c.file)}` : ''}`).join('\n');
 }
 
 // The first record of a rollout file, which carries the thread id, the working directory and how
@@ -331,14 +389,22 @@ function deliverToChat(msg, live) {
 function connect(to) {
   name(to, 'peer');
   const root = fs.realpathSync(opts.cd);
+  // Chosen before the mutex: finding the chats can take a moment and can stop with a question,
+  // and neither should hold the endpoint against another session.
+  const chat = opts.headless ? null : chooseChat(to, root);
+  const done = registering(to, () => register(to, root, chat));
+  if (done) console.log(done);
+}
+
+function register(to, root, chat) {
   const existing = usablePeer(to, root);
-  if (existing) return console.log(`"${to}" is already connected (${existing.kind === 'chat' ? `Codex chat ${existing.thread}` : 'background Codex'}, ${existing.cwd}); say what you want to ask, or: agent-bus disconnect ${to}`);
+  if (existing) return `"${to}" is already connected (${existing.kind === 'chat' ? `Codex chat ${existing.thread}` : 'background Codex'}, ${existing.cwd}); say what you want to ask, or: agent-bus disconnect ${to}`;
   // One consumer per endpoint, whatever kind it is: a chat and a listener on the same name would
   // both answer, each unaware of the other.
   const lock = readLock(to);
-  if (lock && !lock.malformed && holder(lock) !== 'gone') die(`endpoint "${to}" is served by a background Codex (pid ${lock.pid}) — stop it first (agent-bus disconnect ${to}), or connect under another name: agent-bus connect ${to}-2 --cd ${root}`);
+  if (lock?.malformed) die(`endpoint "${to}" has a lock file that does not hold a pid — look at ${lockFile(to)}, then: agent-bus unlock ${to} --force`);
+  if (lock && holder(lock) !== 'gone') die(`endpoint "${to}" is served by a background Codex (pid ${lock.pid}) — stop it first (agent-bus disconnect ${to}), or connect under another name: agent-bus connect ${to}-2 --cd ${root}`);
 
-  const chat = opts.headless ? null : chooseChat(to, root);
   if (!chat) {
     // No chat to talk to: the background Codex, started now. The peer record is written only
     // after the listener has taken the endpoint — a record with nothing behind it would make
@@ -346,13 +412,13 @@ function connect(to) {
     const args = ['serve-codex', '--endpoint', to, '--cd', root, '--exec-timeout', String(opts.execTimeout), '--max-rounds', String(opts.maxRounds ?? DEFAULT_MAX_ROUNDS), '--max-runs', String(opts.maxRuns ?? DEFAULT_MAX_RUNS), ...(opts.policy ? ['--policy', path.resolve(opts.policy)] : [])];
     const { pid, log } = serveDetached(to, args);
     atomic(peerFile(to), JSON.stringify({ kind: 'headless', cwd: root, pid, since: new Date().toISOString() }));
-    return console.log(`connected "${to}": a background Codex (pid ${pid}), read-only under ${root}; log ${log}.\nNobody is watching it — ask it to report what matters back to you. Close it with: agent-bus disconnect ${to}`);
+    return `connected "${to}": a background Codex (pid ${pid}), read-only under ${root}; log ${log}.\nNobody is watching it — ask it to report what matters back to you. Close it with: agent-bus disconnect ${to}`;
   }
   const already = fs.readdirSync(dir('peers')).filter((f) => f.endsWith('.json')).find((f) => readJson(path.join(dir('peers'), f)).thread === chat.thread);
   atomic(peerFile(to), JSON.stringify({ kind: 'chat', thread: chat.thread, cwd: chat.cwd, pid: chat.pid, root, since: new Date().toISOString() }));
   if (already) console.log(`NOTE: peer "${already.replace(/\.json$/, '')}" already talks to this chat — it will now receive from both.`);
   const id = send(to, `The agent-bus channel to you is open: I am "${from}"${chat.cwd === root ? '' : `, working in ${root}`}. Roles are not fixed here — whether you review, I review, or we split the work, we agree in the messages. If you can read this, reply in one line (agent-bus reply <this message's id> -), so the user sees the channel works; if writing to the mailbox is denied, say that instead.`, () => fs.unlinkSync(peerFile(to)));
-  console.log(`connected "${to}": Codex chat ${chat.thread} (${chat.cwd}), pid ${chat.pid}. Handshake sent as ${id} — the user sees it in that chat; wait for it with: agent-bus await ${id}`);
+  return `connected "${to}": Codex chat ${chat.thread} (${chat.cwd}), pid ${chat.pid}. Handshake sent as ${id} — the user sees it in that chat; wait for it with: agent-bus await ${id}`;
 }
 
 // The peer already connected under this name, if it still stands AND is the one being asked for.
@@ -370,7 +436,8 @@ function usablePeer(to, root) {
     return rec;
   }
   const lock = readLock(to);
-  const state = lock && !lock.malformed ? holder(lock) : 'gone';
+  if (lock?.malformed) die(`"${to}" has a lock file that does not hold a pid — a listener may still be running. Look at ${lockFile(to)}, then: agent-bus unlock ${to} --force`);
+  const state = lock ? holder(lock) : 'gone';
   if (state === 'unknown') die(byHand(to, lock));
   if (state === 'gone') return forgotten();                                            // its listener died
   if (rec.cwd !== root) mismatch(`for ${rec.cwd}`);
@@ -383,20 +450,36 @@ function usablePeer(to, root) {
 // chats for one project) stops with an error instead: picking for the user would put the
 // conversation in front of whoever is working on something else.
 function chooseChat(to, root) {
-  const chats = liveChats();
-  const list = (cs) => cs.map((c) => `  ${c.thread}  ${c.cwd}`).join('\n');
-  if (opts.thread) {
-    const named = chats.find((c) => c.thread === opts.thread);
-    return named ?? die(`no open Codex chat has thread ${opts.thread} — open chats:\n${list(chats) || '  none'}`);
-  }
+  const open = liveChats();
+  if (opts.thread) return chatByThread(open, opts.thread) ?? die(`no open Codex chat has thread ${opts.thread} — open chats:\n${describeChats(open) || '  none'}`);
   const under = (c) => c.cwd && (c.cwd === root || c.cwd.startsWith(root + path.sep) || root.startsWith(c.cwd + path.sep));
-  const mine = chats.filter(under);
-  if (mine.length > 1) die(`${mine.length} Codex chats are open for ${root} — name the one you mean with --thread:\n${list(mine)}`);
-  if (mine.length === 0 && chats.length) process.stderr.write(`agent-bus: no Codex chat is open for ${root}; these are open elsewhere and were not taken (--thread names one):\n${list(chats)}\n`);
+  const mine = open.filter(under);
+  // Two chats for one project is a question for the person, not a coin toss: which one they meant
+  // decides who reads the conversation. The id may be given in full or by a unique beginning.
+  if (mine.length > 1) die(`${mine.length} Codex chats are open for ${root} — ask which one, then pass --thread <id>:\n${describeChats(mine)}`);
+  if (mine.length === 0 && open.length) process.stderr.write(`agent-bus: no Codex chat is open for ${root}; these are open elsewhere and were not taken (--thread names one):\n${describeChats(open)}\n`);
   return mine[0] ?? null;
 }
 
-function disconnect(to) {
+// Named in full, or by enough of the id to be unambiguous: nobody should have to copy a UUID.
+function chatByThread(chats, wanted) {
+  const hits = chats.filter((c) => c.thread === wanted || c.thread.startsWith(wanted));
+  if (hits.length === 1) return hits[0];
+  if (hits.length > 1) die(`--thread ${wanted} matches ${hits.length} open chats — give more of the id:\n${describeChats(hits)}`);
+  return null;
+}
+
+function chats() {
+  const open = liveChats();
+  if (!open.length) return console.log('no Codex chat is open (a chat is a `codex` session a running process holds open)');
+  console.log(`${open.length} Codex chat${open.length > 1 ? 's are' : ' is'} open:\n${describeChats(open)}`);
+  const peers = fs.readdirSync(dir('peers')).filter((f) => f.endsWith('.json')).map((f) => [f.replace(/\.json$/, ''), readJson(path.join(dir('peers'), f))]);
+  for (const [to, rec] of peers.filter(([, r]) => r.kind === 'chat' && open.some((c) => c.thread === r.thread))) console.log(`  peer "${to}" talks to ${rec.thread}`);
+}
+
+const disconnect = (to) => registering(to, () => unregister(to));
+
+function unregister(to) {
   const rec = fs.existsSync(peerFile(to)) ? readJson(peerFile(to)) : null;
   if (!rec) return console.log(`"${to}" is not connected`);
   fs.unlinkSync(peerFile(to));
@@ -456,7 +539,9 @@ function holder(lock) {
 
 const byHand = (me, lock) => `it could not be verified whether pid ${lock.pid} is the server of "${me}" (ps did not answer, or the lock was written by an older agent-bus) — nothing was signalled or removed. Check it yourself (ps -p ${lock.pid}); if that server is gone, delete ${lockFile(me)}`;
 
-function lockEndpoint(me) {
+const lockEndpoint = (me) => registering(me, () => takeEndpoint(me));
+
+function takeEndpoint(me) {
   // The other half of one-consumer-per-endpoint: a chat is already answering for this name.
   const peer = fs.existsSync(peerFile(me)) ? readJson(peerFile(me)) : null;
   if (peer?.kind === 'chat') die(`endpoint "${me}" is connected to Codex chat ${peer.thread} — a listener would answer the same messages. Close it first (agent-bus disconnect ${me}), or serve another endpoint.`);
@@ -610,7 +695,7 @@ function serveDetached(endpoint, extra) {
   // Given explicitly when another command starts a listener: its own argv would run that command
   // again in the child instead of serving.
   const args = extra ?? process.argv.slice(2).filter((x) => x !== '--detach');
-  const child = spawn(process.execPath, [fs.realpathSync(process.argv[1]), ...args], { detached: true, stdio: ['ignore', fd, fd], cwd: process.cwd() });
+  const child = spawn(process.execPath, [fs.realpathSync(process.argv[1]), ...args], { detached: true, stdio: ['ignore', fd, fd], cwd: process.cwd(), env: { ...process.env, AGENT_BUS_REG_HELD: me } });
   child.unref();
   const lock = lockFile(me);
   // Waited for synchronously: the caller (connect) must not record a peer for a listener that
@@ -836,10 +921,11 @@ switch (cmd) {
     console.log(`serving "${opts.endpoint}" as pid ${pid}; log ${log}; stop with: agent-bus stop ${opts.endpoint}`);
     break;
   }
+  case 'chats': chats(); break;
   case 'connect': connect(a ?? 'codex'); break;
   case 'disconnect': disconnect(name(a ?? 'codex', 'peer')); break;
   case 'stop': stop(a ?? 'codex'); break;
   case 'install': install(); break;
   case 'doctor': doctor(); break;
-  default: die('usage: agent-bus connect|disconnect|send|ask|await|acked|wait|reply|recover|unlock|serve-codex|stop|install|doctor … (see the header of this file)');
+  default: die('usage: agent-bus connect|disconnect|chats|send|ask|await|acked|wait|reply|recover|unlock|serve-codex|stop|install|doctor … (see the header of this file)');
 }

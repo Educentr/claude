@@ -26,8 +26,9 @@ Arguments: `$ARGUMENTS`
 
 ## connect (no `disconnect` / `status` in the arguments)
 
-1. `agent-bus doctor`. Stop and explain if the mailbox, Node or the Codex CLI fails. If it
-   already lists the peer, report that and do nothing else.
+1. `agent-bus doctor`. Stop and explain if the mailbox, Node or the Codex CLI fails. A peer it
+   already lists is **not** a reason to stop: whether that peer is the right one for this project
+   and still alive is decided by `connect` itself, in step 3.
 2. The project root: the directory from the arguments, else `git rev-parse --show-toplevel`, else
    the current directory.
 3. ```bash
@@ -41,8 +42,15 @@ Arguments: `$ARGUMENTS`
    - **No chat was open** — it starts a background Codex and says so. Tell the user plainly that
      nobody is watching that one, and that opening Codex themselves gives them the visible channel.
      `--headless` forces this even when a chat is open; pass it only if they asked.
-   - **It stopped with a question** — two chats for this project, a `--thread` that is not open, the
-     name taken by another pair, or `lsof` missing. Put the choice to the user; do not guess.
+   - **It stopped with a question** — the message says which. Put it to the user, never guess:
+     - *two chats for this project* — it lists each one with its directory and **the last thing
+       the user typed in it**. Ask them which (AskUserQuestion, one option per chat, that last
+       line as the description), then repeat with `--thread <id>`; the first few characters of the
+       id are enough.
+     - *`--thread …` is not open*, *the name belongs to another pair*, *`lsof` could not read the
+       sessions directory* — report what it said and what it offers (another name, `--headless`).
+   - `agent-bus chats` answers "which chats are open" on its own — use it when the user asks, or
+     before connecting if they want to choose up front.
 4. Report: the peer name, which chat (or that it is a background one), the project root, and how
    to close it.
 

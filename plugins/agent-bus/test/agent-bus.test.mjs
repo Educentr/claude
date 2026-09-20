@@ -640,3 +640,49 @@ test('several pairs run at once, each with its own endpoints, and nothing crosse
   }
   await close(one); await close(two);
 });
+
+test('two sessions taking one endpoint at the same moment: exactly one gets it', chatTests, async () => {
+  // Eight at once, each starting a listener — the slow part is inside the registration, which is
+  // where two consumers of one endpoint would otherwise both be recorded.
+  const racing = Array.from({ length: 8 }, () => new Promise((resolve) => {
+    const c = spawn(process.execPath, [CLI, 'connect', 'codex-race', '--cd', project, '--headless', '--exec-timeout', '3'], { env: { ...env, AGENT_BUS_NAME: 'claude-race' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '', err = '';
+    c.stdout.on('data', (d) => { out += d; });
+    c.stderr.on('data', (d) => { err += d; });
+    c.on('exit', (code) => resolve({ code, out, err }));
+  }));
+  const results = await Promise.all(racing);
+  const won = results.filter((r) => r.code === 0 && /connected "codex-race"/.test(r.out));
+  assert.equal(won.length, 1, `exactly one connect may report success, got ${results.map((r) => `${r.code}:${(r.out || r.err).trim().split('\n')[0]}`).join(' | ')}`);
+  for (const lost of results.filter((r) => r.code !== 0)) assert.match(lost.err, /taking endpoint "codex-race" right now|already connected|served by a background Codex/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(bus, 'peers', 'codex-race.json'), 'utf8')).pid, Number(won[0].out.match(/pid (\d+)/)[1]), 'the peer is the listener that actually took the lock');
+  assert.match(run(['disconnect', 'codex-race']).stdout, /stopped the server/);
+});
+
+test('an lsof that could not walk the sessions tree is never read as "no chat is open"', () => {
+  const bin = path.join(tmp, 'deaf-lsof');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'lsof'), '#!/bin/sh\necho "lsof: WARNING: can\'t opendir(/x): Permission denied" >&2\nexit 1\n', { mode: 0o755 });
+  const blind = { PATH: `${bin}:${env.PATH}` };
+  const r = run(['connect', 'codex-blind', '--cd', project], { extraEnv: blind });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /could not read all of .*sessions[\s\S]*--headless/);
+  assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-blind.json')), 'and no background Codex was started on the strength of it');
+  // Naming the peer's own mode still works: the fallback is refused, not the command.
+  assert.match(run(['connect', 'codex-blind', '--cd', project, '--headless', '--exec-timeout', '3'], { extraEnv: blind }).stdout, /a background Codex/);
+  run(['disconnect', 'codex-blind']);
+});
+
+test('chats lists what is open with what was last said in each, and --thread takes a unique prefix', chatTests, async () => {
+  const chat = fakeChat({ thread: 'chat-labelled', cwd: project });
+  fs.appendFileSync(chat.file, `${JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text: '# AGENTS.md instructions' }] } })}\n`);
+  fs.appendFileSync(chat.file, `${JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text: 'Почему healer ждёт живого владельца?\nвторая строка' }] } })}\n`);
+  fs.appendFileSync(chat.file, `${JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text: '[agent-bus:status] Received a question' }] } })}\n`);
+  const listed = run(['chats']);
+  assert.match(listed.stdout, /chat-labelled/);
+  assert.match(listed.stdout, /last said there: Почему healer ждёт живого владельца\?$/m, 'what the person typed, not the preamble and not a transport report');
+  assert.equal(run(['connect', 'codex-prefix', '--cd', project, '--thread', 'chat-lab']).status, 0, 'a unique beginning of the id is enough');
+  assert.match(run(['chats']).stdout, /peer "codex-prefix" talks to chat-labelled/);
+  run(['disconnect', 'codex-prefix']);
+  await close(chat);
+});

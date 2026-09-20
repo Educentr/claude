@@ -50,6 +50,12 @@ put where Codex looks. From Claude Code, in the project you want reviewed:
 /agent-bus:connect      opens the channel for this project; `disconnect` and `status` as arguments
 ```
 
+Several pairs at once: give each its own name — `/agent-bus:connect`, then
+`/agent-bus:connect codex-onei-53` for the next. One name has one answering side, and a name that
+is taken is refused with the name to use instead. `agent-bus chats` lists the open Codex chats
+with the last thing you typed in each, so you can say which one a pair should talk to
+(`--thread <id>`, the first characters are enough).
+
 Both are commands only the user can run: one changes your home directory, the other decides which
 chat is spoken to (or starts another agent — agents do not spawn each other). Without Claude Code,
 from a clone of this repository:
@@ -77,9 +83,11 @@ push, merge or deploy.
 
 - **Files, not a service.** Writes are rename-atomic, a claim is a rename (one taker wins), the
   mailbox is `0700` and the CLI refuses one that is not yours or not private.
-- **A live chat first, a background agent only if asked.** The default peer is the Codex session
-  the user has open — they watch the exchange and can take over. `--headless` starts one that
-  answers by itself, read-only, and that is the user's explicit choice.
+- **A live chat first, a background agent when there is none.** The default peer is the Codex
+  session the user has open — they watch the exchange and can take over. With no chat open, a
+  read-only background Codex is started instead; `--headless` asks for that even when a chat is
+  open. What is a question rather than an absence — two chats for one project, a named thread that
+  is not open, an `lsof` that could not read the sessions directory — stops and asks.
 - **An open chat is one a process holds open.** A closed session's rollout file stays on disk and
   `codex queue` still accepts it, so delivery checks `lsof` first; a message that cannot be
   delivered is withdrawn (exit 6), never left for something else to claim.

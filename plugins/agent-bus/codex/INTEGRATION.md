@@ -89,10 +89,17 @@ agent-bus reply <message id> "Reading you."
 AGENT_BUS_NAME=claude-demo agent-bus ask codex "Which file decides the retry policy?" --timeout 600
 ```
 
-`connect` picks the chat whose directory is this project (`--thread <id>` names another one), and
-it only ever picks a chat a **running** process holds open. With no chat open it says so and
-offers `--headless`, which starts a background Codex instead. `agent-bus disconnect codex` closes
-the channel; the chat itself is untouched.
+`connect` picks the chat whose directory is this project and that a **running** process holds
+open; with no such chat it starts a background Codex instead. It never picks between two chats of
+one project — `agent-bus chats` lists what is open, with the last thing you typed in each, and
+`--thread <id>` (a unique beginning of the id will do) says which. `--headless` asks for the
+background one even when a chat is open. `agent-bus disconnect codex` closes the channel; the chat
+itself is untouched.
+
+**Several pairs at once** is the normal case: one peer name each (`codex`, `codex-<label>`), and
+every Claude session with its own `AGENT_BUS_NAME=claude-<label>`. A name has one answering side —
+`connect` refuses a name another pair holds, or that a listener serves, and prints the name to use
+instead.
 
 Both sides must see the same mailbox: `$AGENT_BUS_DIR`, default `~/.local/state/agent-bus`.
 
@@ -174,7 +181,10 @@ time because an endpoint handles its messages one by one. For full isolation use
 | exit 4 `exec_failed` | non-zero exit or no final message | same trace; check `codex login status` |
 | exit 4 `bad_worktree` | the worktree is not under the server's `--cd` | start the server at a common parent |
 | exit 6, `not delivered to "<peer>"` | the peer is a chat that is no longer open (or `codex queue` failed) | nothing was queued and nothing left behind: `agent-bus connect <peer>` again |
-| `lsof is needed to tell which Codex chats are open` | `lsof` is not installed | a chat cannot be found without it: `agent-bus connect <peer> --headless` |
+| exit 6, `it may or may not be in Codex chat …` | `codex queue` timed out — it may have been written | look at that chat before sending again; `agent-bus recover <peer>` lists it |
+| `lsof is needed …` / `lsof could not read all of …` | lsof missing, or it could not walk the sessions directory | an open chat may have been missed, so no background Codex is started on the strength of it: fix lsof, name the chat with `--thread`, or ask for `--headless` |
+| `another connect or listener is taking endpoint "…" right now` | two sessions registered the same endpoint at once | let the other finish, then `agent-bus doctor` |
+| `served by a background Codex` / `connected to Codex chat …` | one endpoint, two would-be answering sides | use the name it suggests (`<peer>-2`) or disconnect the other |
 | Codex says it cannot write to the mailbox | the chat's sandbox does not include it | `agent-bus install --codex-config`, then restart that session |
 | exit 4 `run_limit` | the conversation has spent its `--max-runs` | take what is left to the user, or start another conversation |
 | exit 4 `round_limit` | the conversation has used its rounds (the limit is fixed by its first review and never above the running server's `--max-rounds`; failed runs, an oversize reply included, do not count) | take the open points to the user |
