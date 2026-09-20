@@ -12,10 +12,11 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(here, '..', 'bin', 'agent-bus');
 const HEAD = 'a'.repeat(40);
 
-let tmp, bus, project, calls, queued, env, server, serverB;
+let tmp, bus, project, calls, queued, codexHome, env, server, serverB;
 
 const run = (args, { input, as = 'claude-test', extraEnv = {} } = {}) =>
   spawnSync(process.execPath, [CLI, ...args], { input, encoding: 'utf8', env: { ...env, AGENT_BUS_NAME: as, ...extraEnv } });
+const queuedMessages = () => (fs.existsSync(queued) ? fs.readFileSync(queued, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 const codexCalls = () => (fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 
 function serve(extra = [], cd = project, extraEnv = {}) {
@@ -33,10 +34,11 @@ before(async () => {
   fs.mkdirSync(path.join(project, 'worktrees', 'one'), { recursive: true });
   calls = path.join(tmp, 'codex-calls.jsonl');
   queued = path.join(tmp, 'codex-queue.jsonl');
+  codexHome = fs.realpathSync(fs.mkdtempSync(path.join(tmp, 'codex-home-')));
   const bin = path.join(tmp, 'bin');
   fs.mkdirSync(bin);
   fs.symlinkSync(path.join(here, 'fake-codex'), path.join(bin, 'codex'));
-  env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, AGENT_BUS_DIR: bus, FAKE_CODEX_CALLS: calls, FAKE_CODEX_QUEUE: queued, AGENT_BUS_DEPTH: '0' };
+  env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, AGENT_BUS_DIR: bus, CODEX_HOME: codexHome, FAKE_CODEX_CALLS: calls, FAKE_CODEX_QUEUE: queued, AGENT_BUS_DEPTH: '0' };
   delete env.AGENT_BUS_REPORT_THREAD;
   server = await serve(['--exec-timeout', '3']);
   serverB = await serve(['--endpoint', 'codex-b', '--exec-timeout', '3']);
@@ -115,7 +117,7 @@ test('the server runs Codex read-only in the review\'s worktree, under the polic
   const [c1, c2, c3] = codexCalls().slice(-3);
   assert.equal(c1.cwd, wt);
   assert.deepEqual(c1.args.slice(2, 6), ['-s', 'read-only', '-a', 'never']);
-  assert.match(c1.prompt, /^# agent-bus policy: read-only reviewer/);
+  assert.match(c1.prompt, /^# agent-bus policy: peer/);
   assert.match(c1.prompt, /Review round 1 of 5\. Worktree: /);
   assert.ok(!c1.args.includes('resume'), 'the first round starts a thread');
   assert.ok(c2.args.includes('resume') && c2.args.includes('thread-codex'), 'the second round resumes the thread of the thread.started EVENT, not any line that mentions thread_id');
@@ -250,10 +252,10 @@ test('install copies the plugin to a stable place, links the CLI and the Codex s
   assert.match(first.stdout, /copied  agent-bus \d+\.\d+\.\d+ -> /);
   const cli = path.join(dirs.AGENT_BUS_BIN_DIR, 'agent-bus');
   assert.equal(fs.readlinkSync(cli), path.join(dirs.AGENT_BUS_HOME, 'bin', 'agent-bus'));
-  assert.equal(fs.readlinkSync(path.join(dirs.AGENT_BUS_CODEX_SKILLS_DIR, 'agent-bus-reviewer')), path.join(dirs.AGENT_BUS_HOME, 'codex', 'skills', 'agent-bus-reviewer'));
+  assert.equal(fs.readlinkSync(path.join(dirs.AGENT_BUS_CODEX_SKILLS_DIR, 'agent-bus')), path.join(dirs.AGENT_BUS_HOME, 'codex', 'skills', 'agent-bus'));
   // The copy is self-sufficient: the installed CLI finds ITS policy, not the source's.
   const doctor = spawnSync(process.execPath, [cli, 'doctor'], { encoding: 'utf8', env: { ...env, ...dirs } });
-  assert.ok(doctor.stdout.includes(`ok   policy ${path.join(fs.realpathSync(dirs.AGENT_BUS_HOME), 'policies', 'reviewer.md')}`), doctor.stdout);
+  assert.ok(doctor.stdout.includes(`ok   policy ${path.join(fs.realpathSync(dirs.AGENT_BUS_HOME), 'policies', 'peer.md')}`), doctor.stdout);
   assert.equal(install().status, 0, 'running it again updates the copy');
   // …but the installed copy cannot install itself over itself,
   assert.match(spawnSync(process.execPath, [cli, 'install'], { encoding: 'utf8', env: { ...env, ...dirs } }).stderr, /this is the installed copy/);
@@ -389,7 +391,7 @@ test('uninstall removes only the links install makes — not any link that happe
 });
 
 test('with a report thread set, the Codex chat is told what was asked and what was answered — and a lost report loses nothing', async () => {
-  const reports = () => (fs.existsSync(queued) ? fs.readFileSync(queued, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+  const reports = queuedMessages;
   const reporting = await serve(['--endpoint', 'codex-reports', '--exec-timeout', '3'], project, { AGENT_BUS_REPORT_THREAD: 'thread-chat', AGENT_BUS_REPORT_CHARS: '60' });
   try {
     const long = `Is the healer right to wait for a live owner? ${'context '.repeat(40)}`;
@@ -418,4 +420,128 @@ test('recover lists what was claimed and never answered, and puts one back only 
   assert.match(run(['recover', 'codex-crashed']).stdout, new RegExp(`^${id}\\tquestion\\tfrom claude-test`));
   assert.match(run(['recover', 'codex-crashed', '--requeue', id]).stdout, /requeued/);
   assert.equal(JSON.parse(run(['wait', 'codex-crashed', '--timeout', '5'], { as: 'codex-crashed' }).stdout).id, id);
+});
+
+// ---- the channel to a Codex chat the user has open ----------------------------------------------
+
+// A chat is a rollout file that a RUNNING process holds open; the file alone outlives the session.
+// So the fake chat is a file plus a process sitting on it, and closing the chat means killing it.
+const holders = [];
+function fakeChat({ thread, cwd, originator = 'codex-tui', source = 'cli' }) {
+  const file = path.join(codexHome, 'sessions', '2026', '09', '21', `rollout-${thread}.jsonl`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify({ type: 'session_meta', payload: { id: thread, session_id: thread, cwd, originator, source, cli_version: '0.155.1' } })}\n`);
+  const holder = spawn(process.execPath, ['-e', 'require("node:fs").openSync(process.argv[1], "r"); setInterval(() => {}, 1000);', file], { stdio: 'ignore' });
+  holders.push(holder);
+  return { file, holder, thread };
+}
+const close = (chat) => new Promise((resolve) => { chat.holder.on('exit', resolve); chat.holder.kill(); });
+const lsof = spawnSync('lsof', ['-v'], { encoding: 'utf8' });
+
+after(() => holders.forEach((h) => h.kill()));
+
+const chatTests = { skip: lsof.error ? 'lsof is not installed' : false };
+
+test('connect finds the Codex chat open for this project and the handshake lands in it', chatTests, async () => {
+  const chat = fakeChat({ thread: 'chat-for-project', cwd: project });
+  fakeChat({ thread: 'chat-elsewhere', cwd: path.join(tmp, 'another') });                 // another project
+  fakeChat({ thread: 'chat-subagent', cwd: project, source: { subagent: { other: 'guardian' } } });  // nobody watches it
+  const before = queuedMessages().length;
+  const ran = codexCalls().length;
+  const r = run(['connect', 'codex-chat', '--cd', project], { as: 'claude-here' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /connected "codex-chat": Codex chat chat-for-project/);
+  const [handshake] = queuedMessages().slice(before);
+  assert.equal(handshake.thread, 'chat-for-project', 'not the subagent rollout and not the other project');
+  assert.match(handshake.message, /^\[agent-bus\] question from "claude-here"/m);
+  assert.match(handshake.message, /Roles are not fixed here/);
+  assert.match(handshake.message, /Reply with:  agent-bus reply \d+-[0-9a-f]{8} -/);
+  assert.match(handshake.message, /another coding agent asking, not the user/);
+
+  // Queued into the chat = delivered: it is not left in the inbox for something else to claim,
+  // and the sender is told who took it.
+  const id = r.stdout.match(/Handshake sent as (\S+)/)[1];
+  assert.deepEqual(fs.readdirSync(path.join(bus, 'inbox', 'codex-chat')), []);
+  assert.ok(fs.existsSync(path.join(bus, 'claimed', 'codex-chat', `${id}.json`)));
+  assert.match(run(['acked', id, '--timeout', '5']).stdout, /queued into Codex chat chat-for-project/);
+
+  // …and the chat answers with the ordinary command, which the sender is waiting for.
+  run(['reply', id, 'Got it — I can read the mailbox.'], { as: 'codex-chat' });
+  assert.equal(run(['await', id, '--timeout', '5']).stdout, 'Got it — I can read the mailbox.\n');
+  assert.equal(codexCalls().length, ran, 'a live chat is never run headless behind the user\'s back');
+  await close(chat);
+});
+
+test('a message to a chat that is gone is withdrawn, not left for whatever claims it next', chatTests, async () => {
+  const chat = fakeChat({ thread: 'chat-that-closes', cwd: project });
+  assert.equal(run(['connect', 'codex-gone', '--cd', project]).status, 0);
+  await close(chat);                                     // the user closed the chat
+  fs.writeFileSync(path.join(codexHome, 'sessions', '2026', '09', '21', 'rollout-chat-that-closes.jsonl'), fs.readFileSync(chat.file));   // its file stays behind
+  const r = run(['send', 'codex-gone', 'anybody there?']);
+  assert.equal(r.status, 6);
+  assert.match(r.stderr, /not delivered to "codex-gone".*agent-bus connect codex-gone/s);
+  assert.deepEqual(fs.readdirSync(path.join(bus, 'inbox', 'codex-gone')), [], 'nothing is left queued for a chat nobody reads');
+  // Connecting again says what to do instead of silently picking some other chat.
+  const again = run(['connect', 'codex-gone', '--cd', project]);
+  assert.equal(again.status, 1);
+  assert.match(again.stderr, /no Codex chat is open for .*--headless/s);
+  assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-gone.json')), 'and the stale peer is forgotten');
+});
+
+test('a chat that cannot be reached at all leaves no peer behind', chatTests, async () => {
+  const chat = fakeChat({ thread: 'thread-broken', cwd: project });        // the fake codex fails to queue for this one
+  const r = run(['connect', 'codex-broken', '--cd', project]);
+  assert.equal(r.status, 6);
+  assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-broken.json')));
+  await close(chat);
+});
+
+test('with no chat open the user is offered the background Codex, and --headless starts one that answers', chatTests, () => {
+  assert.match(run(['connect', 'codex-bg', '--cd', project]).stderr, /no Codex chat is open/);
+  const r = run(['connect', 'codex-bg', '--cd', project, '--headless']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /connected "codex-bg": a background Codex, read-only/);
+  try {
+    assert.match(run(['ask', 'codex-bg', 'are you there?', '--timeout', '30']).stdout, /VERDICT: APPROVE/);
+    assert.match(run(['connect', 'codex-bg', '--cd', project]).stdout, /already connected \(background Codex\)/);
+  } finally { assert.match(run(['disconnect', 'codex-bg']).stdout, /stopped the server of "codex-bg"/); }
+  assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-bg.json')));
+});
+
+test('a conversation has a budget of runs, failed ones included — not only of review rounds', async () => {
+  const server = await serve(['--endpoint', 'codex-budget', '--exec-timeout', '3', '--max-runs', '2']);
+  try {
+    const ask = (body) => run(['ask', 'codex-budget', body, '--conversation', 'ticket-budget', '--timeout', '20']);
+    assert.match(ask('PLEASE_FAIL').stderr, /exec_failed/);      // a failed run costs the same model time
+    assert.equal(ask('and now a real one').status, 0);
+    const third = ask('one more');
+    assert.equal(third.status, 4);
+    assert.match(third.stderr, /run_limit.*has used its 2 runs/);
+  } finally { await stop(server); }
+});
+
+test('install replaces the 1.x reviewer skill link and lets a Codex chat write back — without touching a sandbox section already there', () => {
+  const dirs = { AGENT_BUS_HOME: path.join(tmp, 'share-2'), AGENT_BUS_BIN_DIR: path.join(tmp, 'bin-2'), AGENT_BUS_CODEX_SKILLS_DIR: path.join(tmp, 'skills-2'), CODEX_HOME: path.join(tmp, 'codex-home-2') };
+  const install = (...args) => run(['install', ...args], { extraEnv: dirs });
+  install();
+  // The old name, as 1.x installed it, pointing into the copy install manages.
+  const old = path.join(dirs.AGENT_BUS_CODEX_SKILLS_DIR, 'agent-bus-reviewer');
+  fs.symlinkSync(path.join(dirs.AGENT_BUS_HOME, 'codex', 'skills', 'agent-bus-reviewer'), old);
+  const mine = path.join(dirs.AGENT_BUS_CODEX_SKILLS_DIR, 'my-own-skill');
+  fs.symlinkSync(path.join(tmp, 'somewhere'), mine);
+  assert.match(install().stdout, /removed  .*agent-bus-reviewer — the Codex skill is now "agent-bus"/);
+  assert.ok(!fs.existsSync(old) && fs.lstatSync(mine).isSymbolicLink(), 'only the link install itself made');
+
+  const config = path.join(dirs.CODEX_HOME, 'config.toml');
+  fs.mkdirSync(dirs.CODEX_HOME, { recursive: true });
+  fs.writeFileSync(config, 'sandbox_mode = "workspace-write"\n');
+  assert.match(install('--codex-config').stdout, new RegExp(`added   ${bus} to writable_roots`));
+  assert.match(fs.readFileSync(config, 'utf8'), new RegExp(`\\[sandbox_workspace_write\\]\\nwritable_roots = \\["${bus}"\\]`));
+  assert.match(install('--codex-config').stdout, /kept .* already there/, 'added once');
+  // A file that already configures the sandbox is never edited — the user is told what to add.
+  fs.writeFileSync(config, '[sandbox_workspace_write]\nwritable_roots = ["/somewhere/else"]\n');
+  const told = install('--codex-config');
+  assert.match(told.stdout, new RegExp(`already configures sandbox_workspace_write[\\s\\S]*${bus}`));
+  assert.equal(fs.readFileSync(config, 'utf8'), '[sandbox_workspace_write]\nwritable_roots = ["/somewhere/else"]\n');
+  install('--uninstall');
 });

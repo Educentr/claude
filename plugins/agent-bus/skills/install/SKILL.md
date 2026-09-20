@@ -25,7 +25,8 @@ files. It changes the user's home directory, so it runs only when the user asks 
 
    By default it **copies** `bin/`, `policies/`, `PROTOCOL.md` and `codex/` to
    `~/.local/share/agent-bus` (a plugin's own directory is a cache that an update may move) and
-   links `~/.local/bin/agent-bus` and `~/.agents/skills/agent-bus-reviewer` to that copy. With
+   links `~/.local/bin/agent-bus` and `~/.agents/skills/agent-bus` to that copy (a link left by
+   1.x under the old name `agent-bus-reviewer` is removed). With
    `--link` it links straight to the source instead — only sensible for a git clone.
 
 2. Read the output to the user. A line `SKIPPED … a regular file is already there` means an older,
@@ -48,8 +49,21 @@ files. It changes the user's home directory, so it runs only when the user asks 
    It is added once; a second run leaves the file alone. Open Codex sessions must be restarted to
    see it.
 
-5. Do **not** start a listener from here. Tell the user the next step: `/agent-bus:serve` in the
-   project they want reviewed.
+5. **Ask** whether to let a live Codex chat answer over the channel. `agent-bus reply` writes
+   into the mailbox, which Codex's `workspace-write` sandbox denies unless the mailbox is a
+   writable root. Only on a yes:
+
+   ```bash
+   node "${CLAUDE_SKILL_DIR}/../../bin/agent-bus" install --codex-config
+   ```
+
+   It adds one block to `~/.codex/config.toml`, once, and never touches a `sandbox_workspace_write`
+   section that is already there — then it prints the root to add by hand. Open Codex sessions must
+   be restarted. Without this the channel still works in one direction: Codex receives, and says it
+   cannot write back.
+
+6. Do **not** open a channel from here. Tell the user the next step: `/agent-bus:connect` in the
+   project they are working on.
 
 ## Report
 

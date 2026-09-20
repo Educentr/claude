@@ -3,16 +3,20 @@ name: codex-review
 description: >-
   Use when a change should be reviewed by Codex before it is pushed or a pull request is opened —
   "review with Codex", "отдай на ревью Codex", "ревью через agent-bus", a fix in a risky area, or
-  a project rule that every change passes an agent review. Defines the author/reviewer roles, the
-  request and verdict format, the five-round limit, how to handle REQUEST_CHANGES and what
-  APPROVE does and does not permit. Needs the agent-bus skill for the transport.
+  a project rule that every change passes an agent review. A review is one use of the agent-bus
+  channel: this skill is the author's side of it — the request and verdict format, the five-round
+  limit, how to handle REQUEST_CHANGES and what APPROVE does and does not permit. Needs the
+  agent-bus skill for the channel itself.
 ---
 
 # codex-review — a review by another agent, in rounds
 
-You are the **author**; Codex is a **read-only reviewer**. The format is specified in
-`PROTOCOL.md` at the plugin root (`${CLAUDE_SKILL_DIR}/../../PROTOCOL.md`); the reviewer's side
-of the contract is `policies/reviewer.md`. This skill is how the author behaves.
+A review is one thing the agent-bus channel is used for, not what it is for. In **this** exchange
+you are the author and the peer reviews; the next exchange may be the other way round, and either
+side may decline a role. The format is specified in `PROTOCOL.md` at the plugin root
+(`${CLAUDE_SKILL_DIR}/../../PROTOCOL.md`); the peer's side of the contract is `policies/peer.md`
+(or `policies/reviewer.md` for a listener the user started for reviewing alone). This skill is how
+the author behaves.
 
 **Announce at the start:** "Using the codex-review skill: round N of 5."
 
@@ -70,7 +74,8 @@ request or deploy; those remain whatever the user and the project's rules say.
 
 Exit 4 from `ask` is not a verdict — the run failed (`exec_timeout`, `bad_worktree`,
 `bad_envelope`, …). Fix the cause and repeat the same round number: a run that failed does not use
-up a round.
+up a round, though it does count against the conversation's run budget (`run_limit`). A peer that
+declines to review is not a failure either: it answered. Take that to the user.
 
 ## Five rounds, then the user
 

@@ -6,13 +6,13 @@ Marketplace of Claude Code plugins for API development workflows.
 
 | Plugin | Description | Version |
 |--------|-------------|---------|
-| [agent-bus](./plugins/agent-bus) | Claude Code ↔ Codex: file mailbox, agent-to-agent questions, round-based code review | 1.1.0 |
+| [agent-bus](./plugins/agent-bus) | Claude Code ↔ Codex: a channel into the Codex chat you have open (or a background one), agent-to-agent questions, round-based code review | 2.0.0 |
 | [api-tools](./plugins/api-tools) | Convert API documentation to OpenAPI specs | 1.0.0 |
 | [go-project-starter](./plugins/go-project-starter) | Generate Go microservices from YAML configs | 1.0.0 |
 
 ### agent-bus
 
-Two coding agents on one machine talking through a private file mailbox: Claude Code writes, Codex reviews read-only. Ships the `agent-bus` CLI (added to the Bash `PATH` while the plugin is enabled), a protocol with typed messages and a round-limited review format, and everything the Codex side needs — see [plugins/agent-bus/codex/INTEGRATION.md](./plugins/agent-bus/codex/INTEGRATION.md).
+Two coding agents on one machine talking to each other instead of through you. One command in Claude Code opens the channel to the Codex chat you already have open — you see both sides and can join in; with no chat open, and only if you ask, a Codex answers in the background read-only. Roles are not fixed: who asks, who reviews and who writes is agreed in the messages, and a review is one use of the channel. Ships the `agent-bus` CLI (added to the Bash `PATH` while the plugin is enabled), a protocol with typed messages and a round-limited review format, and everything the Codex side needs — see [plugins/agent-bus/codex/INTEGRATION.md](./plugins/agent-bus/codex/INTEGRATION.md).
 
 Skills included:
 
@@ -23,8 +23,8 @@ Commands only the user runs:
 
 | Command | Description |
 |---------|-------------|
-| `/agent-bus:install` | Put the CLI and the Codex-side skill where Codex finds them (copy in `~/.local/share/agent-bus`, links in `~/.local/bin` and `~/.agents/skills`); optionally the `AGENTS.md` block |
-| `/agent-bus:serve` | Start the Codex listener for the current project, detached; `stop` / `status` as arguments |
+| `/agent-bus:install` | Put the CLI and the Codex-side skill where Codex finds them (copy in `~/.local/share/agent-bus`, links in `~/.local/bin` and `~/.agents/skills`); optionally the `AGENTS.md` block and the mailbox as a writable root for Codex |
+| `/agent-bus:connect` | Open the channel for the current project — the Codex chat you have open, or `--headless` for a background one; `disconnect` / `status` as arguments |
 | `/agent-bus:uninstall` | Remove what `install` put there; the mailbox is left alone |
 
 ### api-tools

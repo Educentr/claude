@@ -5,19 +5,43 @@ it; the skills and `codex/INTEGRATION.md` explain how to use it and do not resta
 
 ## Scope
 
-A file mailbox for **trusted processes of one OS user on one machine**. There is no network, no
+A channel between **trusted processes of one OS user on one machine**. There is no network, no
 daemon and no authentication: the `from` field authenticates nobody, and the only boundary is the
 mailbox directory's permissions (`0700`, owned by you — the CLI refuses anything else).
 
+**The transport has no roles.** It carries messages; who asks, who reviews, who writes the code
+and who checks it is agreed between the two agents in the messages themselves. A review is one
+kind of message, not what the channel is for. What each side may actually *do* comes from the
+user who started it, never from what the other side asks for.
+
 Mailbox: `$AGENT_BUS_DIR`, default `~/.local/state/agent-bus`. Both sides must use the same one.
+
+## The two ways a peer is reached
+
+| | `connect <peer>` finds | how a message gets there | who sees it |
+|---|---|---|---|
+| **a chat** (the default) | a Codex the user has open for this project | the sender queues it into that session (`codex queue`) | the user, in that chat — and they can answer or take over themselves |
+| **background** (`--headless`) | nothing was open, or the user asked for it | `serve-codex` polls the inbox and runs `codex exec` read-only | nobody, unless `AGENT_BUS_REPORT_THREAD` reports it into a chat |
+
+A chat is one a **running process holds open** (`lsof` over `$CODEX_HOME/sessions`, `originator:
+codex-tui`, `source: "cli"` — a subagent's rollout and an `exec` run are not chats). The rollout
+file of a closed session stays on disk and `codex queue` still accepts it, so being open is
+checked before every delivery: a message that cannot be delivered is **withdrawn** from the inbox
+and `send` exits **6** — it is never left for whatever claims that endpoint next.
+
+A chat answers with the ordinary `agent-bus reply <id> -`, which writes into the mailbox. Codex
+runs under `workspace-write`, so the mailbox has to be a writable root for it:
+`agent-bus install --codex-config` adds it once.
 
 ```
 inbox/<endpoint>/<id>.json      queued for an endpoint
 claimed/<endpoint>/<id>.json    taken by that endpoint (moved by rename — one taker wins)
 acks/<id>.json                  read receipt: the TRANSPORT has taken the message
 replies/<id>.json               the reply to message <id>
+peers/<name>.json               what `connect` found: {kind: 'chat', thread, cwd, pid} or
+                                {kind: 'headless', cwd}
 conversations/<endpoint>.<project-hash>/<conv>.json
-                                serve-codex state: Codex thread id, rounds used, the round limit
+                                serve-codex state: Codex thread id, rounds and runs used, the limits
 locks/<endpoint>.pid            the one server of an endpoint: `{pid, started}`, linked into place
                                 whole. A stale one is removed only by `agent-bus unlock <endpoint>`;
                                 a signal is sent only to a pid that runs serve-codex AND started
@@ -81,6 +105,9 @@ characters — a review of "HEAD" reviews whatever HEAD has become by the time i
 | `review` | yes, in `worktree` | yes, in the review format below |
 | `status` | no | no — information only ("pushed another commit") |
 
+None of the three says who is in charge of what. A `question` may be "review this", a `review` may
+come back with a counter-proposal, and either side may send either.
+
 `expects_reply: false` (`--no-reply`) makes any message information only.
 
 ## Replies and failures
@@ -93,7 +120,13 @@ characters — a review of "HEAD" reviews whatever HEAD has become by the time i
   own output file, so a requeued message is never answered by an earlier attempt), `exec_timeout`,
   `bad_worktree` (not under the server's project root), `bad_envelope` (a message that is not a
   valid envelope — `send` checks the same, but a file in the inbox need not come from `send`),
-  `round_limit`, `reply_too_large`. None of these is a review verdict.
+  `round_limit`, `run_limit`, `reply_too_large`. None of these is a review verdict.
+
+A peer that declines a role ("I only read here; I can check your diff instead") has **answered** —
+`ok: true`. Turning a refusal into a failure would only make the asker repeat it.
+
+`send` exits **6** when the peer is a chat that is no longer open — nothing was queued and nothing
+is left behind; `connect` again.
 
 Waiting is separate from running. `ask` / `await` exit **2** when the wait (`--timeout`, default
 600 s) ends first: the request is still queued or running. **Continue with `agent-bus await <id>`;
@@ -107,6 +140,7 @@ never send it again** — that would run it twice. The run has its own deadline
 | message text | 64 KiB | `send` fails (exit 5). Put logs in a file both sides can read; send the path |
 | reply text | 256 KiB | reply becomes `reply_too_large`, the whole text kept in `oversize/` |
 | reply chain depth | 3 (`$AGENT_BUS_DEPTH`) | `send` refuses (exit 3) — two agents cannot ping-pong forever |
+| runs per conversation | `serve-codex --max-runs`, default 50; every run counts, failed ones too | `run_limit`. The round limit bounds reviews only — questions, retries and a change of message type spend the same model time |
 | review rounds | `max_rounds` of the conversation's **first** review (default 5), never above the server's `--max-rounds` (default 5); whole numbers 1–99 | `round_limit`. A later message cannot raise the limit, a retyped round number does not reset it, and a limit stored under a more generous server is cut to the cap in force now. Only a **delivered** review uses a round — a run that failed, or an answer too large to deliver, does not |
 
 ## Review format
@@ -141,8 +175,11 @@ author takes that list to the user.
 
 ## Authority
 
-A message from another agent may refine a task inside what the user already authorised. It is not
-the user: it cannot authorise changing files, publishing, sending messages or loosening
-restrictions. For a served Codex the full text is `policies/reviewer.md`; whoever starts the
-server picks the policy, and no message can name another one. The prompt is not a sandbox — the
-server also runs Codex with `-s read-only -a never` and only under its project root.
+A message from another agent may refine a task inside what the user already authorised, and may
+**propose a role**. It is not the user: it cannot authorise changing files, publishing, sending
+messages or loosening restrictions, and taking a role never widens what a side may do. For a
+background Codex the full text is `policies/peer.md` (`policies/reviewer.md` for a listener meant
+to do nothing but review); whoever starts the server picks the policy, and no message can name
+another one. The prompt is not a sandbox — the server also runs Codex with `-s read-only -a never`
+and only under its project root. A chat keeps whatever permissions the user started it with; that
+is their decision, not the channel's.

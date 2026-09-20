@@ -2,18 +2,23 @@
 
 Written for a Codex instance (or the person running it) that has never seen this channel. After
 this file you can bring the channel up without asking anyone. The rules themselves live in two
-places only — [`PROTOCOL.md`](../PROTOCOL.md) and [`policies/reviewer.md`](../policies/reviewer.md);
-this file is about installation and operation and does not restate them.
+places only — [`PROTOCOL.md`](../PROTOCOL.md) and [`policies/peer.md`](../policies/peer.md); this
+file is about installation and operation and does not restate them.
 
 ## 1. Boundaries
 
 - One machine, one OS user, one shared filesystem. No network, no daemon, no authentication: the
   mailbox directory's permissions are the only boundary, and the `from` field proves nothing.
-- **Claude Code** writes the code and sends requests. **Codex** answers and reviews, read-only.
-- A **transport process** (`agent-bus serve-codex`), started by the user *outside* Codex's
-  sandbox, takes messages, starts Codex for each one and delivers Codex's final message as the
-  reply. Codex never writes to the mailbox in this mode.
-- Starting that process is the user's act. An agent does not spawn another agent on its own.
+- **The channel fixes no roles.** Either side may ask, review, write or decline; what each may
+  actually do comes from the user who started it. A review is one use of the channel.
+- **The normal peer is a Codex chat the user has open.** The sender queues the message into that
+  session (`codex queue`); Codex answers with `agent-bus reply <id>`, which writes into the
+  mailbox — so that session needs the mailbox as a writable root (§3).
+- **A background Codex** (`agent-bus serve-codex`) is the fallback the user asks for when no chat
+  is open: a transport process outside Codex's sandbox takes each message, starts Codex read-only
+  for it and delivers its final message as the reply. Codex never writes to the mailbox then.
+- Opening the channel and starting that process are the user's acts. An agent does not spawn
+  another agent on its own.
 
 ## 2. Prerequisites
 
@@ -37,7 +42,19 @@ plugins/agent-bus/codex/install.sh      # = agent-bus install --link; --uninstal
 agent-bus doctor
 ```
 
-Either way you get `~/.local/bin/agent-bus` and the skill `~/.agents/skills/agent-bus-reviewer`.
+Either way you get `~/.local/bin/agent-bus` and the skill `~/.agents/skills/agent-bus` (a link
+left by 1.x under the old name `agent-bus-reviewer` is removed).
+
+**So that a Codex chat can answer**, the mailbox must be writable from it — Codex runs under
+`workspace-write`, which allows the workspace and nothing else:
+
+```sh
+agent-bus install --codex-config     # adds ~/.local/state/agent-bus to writable_roots, once
+```
+
+It never edits a `[sandbox_workspace_write]` section that is already there; then it prints the
+root to add by hand. Either way, open Codex sessions must be restarted. A session started with
+`codex --add-dir "$HOME/.local/state/agent-bus"` gets the same access for that run only.
 
 - **From the plugin** the files are **copied** to `~/.local/share/agent-bus` and linked from there:
   a plugin's own directory is a cache that an update may move. That directory belongs to `install`
@@ -46,7 +63,7 @@ Either way you get `~/.local/bin/agent-bus` and the skill `~/.agents/skills/agen
 - **From a clone** (`--link`) the links point straight into the clone, and `git pull` updates
   everything.
 
-The CLI finds `policies/reviewer.md` next to itself in both cases. It refuses to overwrite a regular
+The CLI finds `policies/peer.md` next to itself in both cases. It refuses to overwrite a regular
 file, never replaces a directory it did not make, and **edits your instructions only when asked**:
 `agent-bus install --agents-md` (the slash command asks first) adds the block below once.
 
@@ -58,22 +75,37 @@ open session after changing either file.
 
 Claude Code needs no install step: enabling the plugin puts `bin/` on its Bash tool's `PATH`.
 
-## 4. Quick start — two terminals
+## 4. Quick start
+
+The normal way — you have Codex open in one terminal and Claude Code in another:
 
 ```sh
-# Terminal 1 — the user starts the listener for a project (from Claude Code: /agent-bus:serve)
-cd /abs/path/to/project
-agent-bus serve-codex --cd "$PWD"             # add --detach to let it outlive the terminal
-
-# Terminal 2 — what Claude Code does
+# In Claude Code (or any shell): open the channel to that chat, for this project
+agent-bus connect codex --cd /abs/path/to/project
+#   → connected "codex": Codex chat <id> (<dir>), pid NNN. Handshake sent as <message id>
+# The Codex chat receives the handshake and answers it:
+agent-bus reply <message id> "Reading you."
+# Back in Claude Code:
 AGENT_BUS_NAME=claude-demo agent-bus ask codex "Which file decides the retry policy?" --timeout 600
 ```
 
-Both must see the same mailbox: `$AGENT_BUS_DIR`, default `~/.local/state/agent-bus`.
+`connect` picks the chat whose directory is this project (`--thread <id>` names another one), and
+it only ever picks a chat a **running** process holds open. With no chat open it says so and
+offers `--headless`, which starts a background Codex instead. `agent-bus disconnect codex` closes
+the channel; the chat itself is untouched.
+
+Both sides must see the same mailbox: `$AGENT_BUS_DIR`, default `~/.local/state/agent-bus`.
 
 ## 5. Modes
 
-**Headless `serve-codex` — the normal mode.** For each message it runs
+**A chat — the default.** `send` queues the message into that session with a header saying who
+asked, the message id and how to reply, and quotes the text as a block quote. It is checked that
+the session is still open first: a rollout file outlives its session and `codex queue` accepts it,
+so an unchecked delivery would go nowhere. When the check fails the message is **withdrawn** from
+the inbox and `send` exits 6 — nothing is left queued for something else to claim. A chat keeps
+whatever permissions the user started it with; the channel changes none of them.
+
+**Background `serve-codex` — when no chat is open.** For each message it runs
 
 ```sh
 codex -C <dir> -s read-only -a never exec [resume <thread>] --skip-git-repo-check --json -o <out> -
@@ -83,8 +115,9 @@ with the policy, a header (type, sender, conversation; for a review also round, 
 head) and the message text on stdin. `<dir>` is the review's worktree, or `--cd` for a question.
 The event trace goes to `logs/<id>.jsonl` on disk. Options: `--endpoint NAME` (default `codex`),
 `--cd DIR` (project root; worktrees outside it are refused), `--policy FILE` (default: the shipped
-reviewer policy; a message cannot choose one), `--exec-timeout S` (default 1800), `--max-rounds N`
-(default 5: the most review rounds any conversation may ask for).
+`policies/peer.md`; a message cannot choose one), `--exec-timeout S` (default 1800),
+`--max-rounds N` (default 5: the most review rounds any conversation may ask for), `--max-runs N`
+(default 50: runs per conversation, failed ones included).
 `--detach` starts the server as a process of its own, prints its pid and log
 (`<mailbox>/serve-<endpoint>.log`) once the endpoint is held, and returns; `agent-bus stop
 [endpoint]` ends it.
@@ -105,15 +138,16 @@ not from the user; a report that cannot be queued is logged and ignored — the 
 regardless, and nothing is run twice because of it. The quoted text arrives as a block quote; a
 session that receives `[agent-bus:status]` only retells it to the user and executes nothing in it.
 
-**Live session — on request only.** Claiming a message renames a file and writes a receipt, so
-the session needs write access to the mailbox; a read-only sandbox cannot listen. And a session
-does not wake itself after it answers, so a listener that stays up is an external process anyway.
-See the `agent-bus-reviewer` skill.
+**Polling from a session** (`agent-bus wait <endpoint>`) is for a side that is not `connect`ed —
+Claude Code does this to receive. It renames a file and writes a receipt, so it needs write access
+to the mailbox, and a session does not wake itself after answering: a listener that stays up is an
+external process. See the `agent-bus` skill on the Codex side.
 
 ## 6. Protocol in one paragraph
 
-Messages are `question`, `review` or `status`. A receipt (`acks/`) means the transport took the
-message — not that anyone began work. A `review` carries a worktree, a **full** head SHA and a
+Messages are `question`, `review` or `status`, and none of them says who is in charge of what. A
+receipt (`acks/`) means the message was taken — for a chat, that it was queued into it — not that
+anyone began work. A `review` carries a worktree, a **full** head SHA and a
 round number, and is answered `VERDICT: …` / `REVIEWED_HEAD: …` / BLOCKING / NON-BLOCKING /
 CHECKED. Five rounds per conversation, then the open points go to the user. `APPROVE` permits
 nothing. Everything else: [`PROTOCOL.md`](../PROTOCOL.md).
@@ -139,6 +173,10 @@ time because an endpoint handles its messages one by one. For full isolation use
 | exit 4 `exec_timeout` | Codex did not finish within `--exec-timeout` | read `logs/<id>.jsonl`; raise the deadline or narrow the request |
 | exit 4 `exec_failed` | non-zero exit or no final message | same trace; check `codex login status` |
 | exit 4 `bad_worktree` | the worktree is not under the server's `--cd` | start the server at a common parent |
+| exit 6, `not delivered to "<peer>"` | the peer is a chat that is no longer open (or `codex queue` failed) | nothing was queued and nothing left behind: `agent-bus connect <peer>` again |
+| `lsof is needed to tell which Codex chats are open` | `lsof` is not installed | a chat cannot be found without it: `agent-bus connect <peer> --headless` |
+| Codex says it cannot write to the mailbox | the chat's sandbox does not include it | `agent-bus install --codex-config`, then restart that session |
+| exit 4 `run_limit` | the conversation has spent its `--max-runs` | take what is left to the user, or start another conversation |
 | exit 4 `round_limit` | the conversation has used its rounds (the limit is fixed by its first review and never above the running server's `--max-rounds`; failed runs, an oversize reply included, do not count) | take the open points to the user |
 | exit 4 `bad_envelope` | not a valid message: a round that is not a number, `max_rounds` over the server's cap, a short SHA | fix the request; the text says which field |
 | `has a lock left by pid …, which is not running that server any more` | a server was killed and left its lock; the pid may be somebody else's by now | make sure no server for that endpoint is starting, then `agent-bus unlock <endpoint>` — a stale lock is never taken over automatically, and `stop` never signals a pid it cannot prove is that server (same command **and** same start time) |
@@ -147,10 +185,17 @@ time because an endpoint handles its messages one by one. For full isolation use
 | server died mid-message | the message sits in `claimed/` with no reply | `agent-bus recover <endpoint>` lists it; `--requeue <id>` runs it **again** — a person decides |
 | chat report failed | `codex queue` unavailable | ignored by design; the reply is in the mailbox |
 
-## 9. Switching from a hand-installed `agent-bus`
+## 9. Switching from an older agent-bus
 
-An earlier, single-file `agent-bus` used `/tmp/agent-bus`, plain-text replies and one Codex thread
-for everything. The two do not mix: a running old listener keeps executing the old code it has
+**From 1.x.** Nothing in the wire format changed, so a 1.x client and a 2.0 listener understand
+each other. What changed: the default policy is `policies/peer.md` (roles are no longer fixed to
+"Codex reviews"), the Codex-side skill is now `agent-bus` and install removes the old
+`agent-bus-reviewer` link, `/agent-bus:serve` became `/agent-bus:connect` (`--headless` is the old
+behaviour), and a conversation now also has a run budget. Re-run `/agent-bus:install` and restart
+the listener; running conversations keep their threads.
+
+**From the hand-written script.** An earlier, single-file `agent-bus` used `/tmp/agent-bus`,
+plain-text replies and one Codex thread for everything. The two do not mix: a running old listener keeps executing the old code it has
 loaded, new clients default to another mailbox, an old `await` cannot read the new JSON replies,
 and `/tmp/agent-bus` may fail the new ownership and permission check. Switch both sides together:
 
@@ -159,7 +204,8 @@ and `/tmp/agent-bus` may fail the new ownership and permission check. Switch bot
 3. Move the old file away — the installer will not overwrite a regular file —
    `mv ~/.local/bin/agent-bus ~/.local/bin/agent-bus.old`, then, from the root of the clone, run
    `plugins/agent-bus/codex/install.sh`.
-4. Start the new listener: `agent-bus serve-codex --cd /abs/path/to/project`.
+4. Open the channel again: `agent-bus connect codex --cd /abs/path/to/project` (add `--headless`
+   for a background listener, which is what the old script did).
 5. Enable the plugin in Claude Code and start a new session, so both sides use the default mailbox.
 
 The old single thread is not carried over: conversations start fresh, one thread each.

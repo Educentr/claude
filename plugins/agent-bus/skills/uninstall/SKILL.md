@@ -8,9 +8,9 @@ disable-model-invocation: true
 
 # /agent-bus:uninstall
 
-1. `agent-bus doctor` — if it lists served endpoints, **ask** whether to stop them first
-   (`agent-bus stop <endpoint>`); a listener started from the installed copy keeps running the
-   code it has loaded, but will not survive a restart once the copy is gone.
+1. `agent-bus doctor` — if it lists peers or served endpoints, **ask** whether to close them
+   first (`agent-bus disconnect <peer>`); a listener started from the installed copy keeps running
+   the code it has loaded, but will not survive a restart once the copy is gone.
 2. Remove the links and the copy:
 
    ```bash
@@ -20,5 +20,6 @@ disable-model-invocation: true
    Only links that point into a place `install` manages are removed, and the copy only if
    `install` made it. A regular file at `~/.local/bin/agent-bus` is somebody else's and is left.
 3. Tell the user what is **not** removed: the mailbox `~/.local/state/agent-bus` with every
-   request, reply and trace (delete it by hand when the history is no longer needed), a block
-   added to `~/.codex/AGENTS.md`, and the plugin itself (`/plugin uninstall agent-bus@…`).
+   request, reply and trace (delete it by hand when the history is no longer needed), the blocks
+   added to `~/.codex/AGENTS.md` and `~/.codex/config.toml` (each is marked and removed by hand),
+   and the plugin itself (`/plugin uninstall agent-bus@…`).
