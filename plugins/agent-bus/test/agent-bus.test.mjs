@@ -686,3 +686,48 @@ test('chats lists what is open with what was last said in each, and --thread tak
   run(['disconnect', 'codex-prefix']);
   await close(chat);
 });
+
+test('a listener started on its own takes the registration itself — the held flag is only passed on by a connect that holds it', () => {
+  // Somebody else is registering that endpoint right now.
+  const busy = path.join(bus, 'locks', 'codex-solo.registering');
+  fs.mkdirSync(busy, { recursive: true });
+  const detached = run(['serve-codex', '--cd', project, '--endpoint', 'codex-solo', '--detach', '--exec-timeout', '3']);
+  assert.equal(detached.status, 1);
+  assert.match(detached.stderr, /taking endpoint "codex-solo" right now/);
+  assert.ok(!fs.existsSync(path.join(bus, 'locks', 'codex-solo.pid')), 'and it did not take the endpoint');
+  fs.rmdirSync(busy);
+});
+
+test('a registration is released once: a process that finished registering never removes somebody else\'s', async () => {
+  const server = await serve(['--endpoint', 'codex-once', '--exec-timeout', '3']);   // registers, then releases
+  const busy = path.join(bus, 'locks', 'codex-once.registering');
+  fs.mkdirSync(busy, { recursive: true });                                           // now another process holds it
+  await stop(server);
+  assert.ok(fs.existsSync(busy), 'the exiting listener must not remove the registration it no longer holds');
+  fs.rmdirSync(busy);
+  run(['unlock', 'codex-once']);
+});
+
+test('an lsof killed before it answered is not "no chat is open" either', () => {
+  const bin = path.join(tmp, 'killed-lsof');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'lsof'), '#!/bin/sh\nkill -TERM $$\n', { mode: 0o755 });
+  const r = run(['connect', 'codex-killed', '--cd', project], { extraEnv: { PATH: `${bin}:${env.PATH}` } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /lsof was killed \(SIGTERM\)[\s\S]*--headless/);
+  assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-killed.json')));
+});
+
+test('--thread means the same on the second call as on the first', chatTests, async () => {
+  const chat = fakeChat({ thread: 'chat-prefixed-again', cwd: project });
+  assert.equal(run(['connect', 'codex-again', '--cd', project, '--thread', 'chat-prefixed']).status, 0);
+  const second = run(['connect', 'codex-again', '--cd', project, '--thread', 'chat-prefixed']);
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, /already connected \(Codex chat chat-prefixed-again/);
+  // …and a different chat under the same name is a mismatch, not a quiet switch.
+  const other = fakeChat({ thread: 'chat-prefixed-other', cwd: project });
+  assert.match(run(['connect', 'codex-again', '--cd', project, '--thread', 'chat-prefixed-other']).stderr, /already connected to Codex chat chat-prefixed-again, not chat-prefixed-other/);
+  await close(other);
+  run(['disconnect', 'codex-again']);
+  await close(chat);
+});

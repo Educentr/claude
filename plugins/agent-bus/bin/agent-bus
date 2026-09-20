@@ -260,16 +260,23 @@ const peerFile = (to) => path.join(dir('peers'), `${name(to, 'peer')}.json`);
 // atomic step that serialises them; it is held for the registration only, never for a whole
 // conversation. A listener started BY a connect inherits the held mutex through the environment,
 // or the parent would wait for a lock the child cannot take.
+let holding = null;                // the endpoint whose registration THIS process is holding
 function registering(me, fn) {
-  if (process.env.AGENT_BUS_REG_HELD === me) return fn();
+  // Spent the moment it is used, so it is never inherited twice — not by a further agent-bus
+  // called from the listener, and not by the `codex exec` runs that inherit its environment.
+  if (process.env.AGENT_BUS_REG_HELD === me) { delete process.env.AGENT_BUS_REG_HELD; return fn(); }
   const busy = path.join(dir('locks'), `${name(me, 'endpoint')}.registering`);
   try { fs.mkdirSync(busy); } catch (e) {
     if (e.code !== 'EEXIST') throw e;
     die(`another connect or listener is taking endpoint "${me}" right now — let it finish, then look with: agent-bus doctor`);
   }
-  const clean = () => { try { fs.rmdirSync(busy); } catch { /* gone */ } };
+  // Released exactly once: an exit handler that ran later would remove whatever directory of that
+  // name exists by then — which may be the registration another process is holding.
+  let released = false;
+  const clean = () => { if (released) return; released = true; try { fs.rmdirSync(busy); } catch { /* gone */ } };
   process.on('exit', clean);
-  try { return fn(); } finally { clean(); }
+  holding = me;
+  try { return fn(); } finally { clean(); process.off('exit', clean); holding = null; }
 }
 
 function liveRecord(to) {
@@ -294,6 +301,10 @@ function liveChats() {
   // +D walks the tree; -F gives one field per line (p<pid>, n<name>), which no path can confuse.
   const r = spawnSync('lsof', ['-F', 'pn', '+D', sessions], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
   if (r.error) die(`lsof is needed to tell which Codex chats are open, and it could not be run (${r.error.code ?? r.error.message}) — start the peer in the background instead: agent-bus connect <peer> --headless`);
+  // lsof exits 1 for "found nothing" as well as for "could not read that", so the status alone
+  // settles nothing; what it wrote, and whether it was killed, do. A run that ended on a signal
+  // never finished walking the tree — its empty output is not an answer.
+  if (r.signal || r.status === null) die(`lsof was killed (${r.signal ?? 'no exit status'}) before it could say which Codex chats are open — nothing was concluded from that. Try again, name the chat with --thread, or start the peer in the background: agent-bus connect <peer> --headless`);
   if (r.stderr.trim()) die(`lsof could not read all of ${sessions}, so an open Codex chat may have been missed:\n${r.stderr.trim()}\nFix that, name the chat with --thread, or start the peer in the background: agent-bus connect <peer> --headless`);
   const out = [];
   let pid = null;
@@ -432,7 +443,8 @@ function usablePeer(to, root) {
   if (rec.kind === 'chat') {
     if (!liveChats().some((c) => c.thread === rec.thread)) return forgotten();         // that chat has been closed since
     if ((rec.root ?? rec.cwd) !== root) mismatch(`for ${rec.root ?? rec.cwd}`);
-    if (opts.thread && opts.thread !== rec.thread) mismatch(`to Codex chat ${rec.thread}, not ${opts.thread}`);
+    // --thread takes a prefix when connecting, so it has to mean the same when reconnecting.
+    if (opts.thread && !rec.thread.startsWith(opts.thread)) mismatch(`to Codex chat ${rec.thread}, not ${opts.thread}`);
     return rec;
   }
   const lock = readLock(to);
@@ -695,7 +707,9 @@ function serveDetached(endpoint, extra) {
   // Given explicitly when another command starts a listener: its own argv would run that command
   // again in the child instead of serving.
   const args = extra ?? process.argv.slice(2).filter((x) => x !== '--detach');
-  const child = spawn(process.execPath, [fs.realpathSync(process.argv[1]), ...args], { detached: true, stdio: ['ignore', fd, fd], cwd: process.cwd(), env: { ...process.env, AGENT_BUS_REG_HELD: me } });
+  // Only a caller that is itself inside the registration hands it on; a listener started on its
+  // own (serve-codex --detach) must take the mutex in the child, or two consumers could register.
+  const child = spawn(process.execPath, [fs.realpathSync(process.argv[1]), ...args], { detached: true, stdio: ['ignore', fd, fd], cwd: process.cwd(), env: holding === me ? { ...process.env, AGENT_BUS_REG_HELD: me } : { ...process.env, AGENT_BUS_REG_HELD: '' } });
   child.unref();
   const lock = lockFile(me);
   // Waited for synchronously: the caller (connect) must not record a peer for a listener that
