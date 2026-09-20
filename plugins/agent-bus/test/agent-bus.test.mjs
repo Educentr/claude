@@ -252,19 +252,26 @@ test('install copies the plugin to a stable place, links the CLI and the Codex s
   assert.equal(first.status, 0, first.stderr);
   assert.match(first.stdout, /copied  agent-bus \d+\.\d+\.\d+ -> /);
   const cli = path.join(dirs.AGENT_BUS_BIN_DIR, 'agent-bus');
-  assert.equal(fs.readlinkSync(cli), path.join(dirs.AGENT_BUS_HOME, 'bin', 'agent-bus'));
+  // What goes on PATH is a launcher, not a symlink: the Node that runs the CLI is often one the
+  // PATH of whoever calls it does not carry, and a symlink would simply fail to execute there.
+  assert.match(first.stdout, /wrote   .*home-bin\/agent-bus -> .*share\/agent-bus\/bin\/agent-bus \(run with /);
+  assert.match(fs.readFileSync(cli, 'utf8'), new RegExp(`exec "\\$NODE" "${path.join(dirs.AGENT_BUS_HOME, 'bin', 'agent-bus')}"`));
+  assert.ok(fs.statSync(cli).mode & 0o111, 'and it is executable');
+  // …and it runs where `node` is not on PATH at all, which is the whole point of it.
+  const bare = spawnSync(cli, ['doctor'], { encoding: 'utf8', env: { HOME: process.env.HOME, PATH: '/usr/bin:/bin', AGENT_BUS_DIR: path.join(tmp, 'bare-box') } });
+  assert.match(bare.stdout, /ok +node /, bare.stderr);
   assert.equal(fs.readlinkSync(path.join(dirs.AGENT_BUS_CODEX_SKILLS_DIR, 'agent-bus')), path.join(dirs.AGENT_BUS_HOME, 'codex', 'skills', 'agent-bus'));
   // The copy is self-sufficient: the installed CLI finds ITS policy, not the source's.
-  const doctor = spawnSync(process.execPath, [cli, 'doctor'], { encoding: 'utf8', env: { ...env, ...dirs } });
+  const doctor = spawnSync(cli, ['doctor'], { encoding: 'utf8', env: { ...env, ...dirs } });
   assert.ok(doctor.stdout.includes(`ok   policy ${path.join(fs.realpathSync(dirs.AGENT_BUS_HOME), 'policies', 'peer.md')}`), doctor.stdout);
   assert.equal(install().status, 0, 'running it again updates the copy');
   // …but the installed copy cannot install itself over itself — in either mode. With --link it
   // would relink to that same copy and report success, leaving the user on the old version.
   for (const mode of [[], ['--link']]) {
-    const r = spawnSync(process.execPath, [cli, 'install', ...mode], { encoding: 'utf8', env: { ...env, ...dirs } });
+    const r = spawnSync(cli, ['install', ...mode], { encoding: 'utf8', env: { ...env, ...dirs } });
     assert.equal(r.status, 1, `install ${mode.join(' ')} from the copy`);
     assert.match(r.stderr, /this is the installed copy/);
-    assert.equal(fs.readlinkSync(cli), path.join(dirs.AGENT_BUS_HOME, 'bin', 'agent-bus'), 'and nothing was relinked');
+    assert.match(fs.readFileSync(cli, 'utf8'), new RegExp(`exec "\\$NODE" "${path.join(dirs.AGENT_BUS_HOME, 'bin', 'agent-bus')}"`), 'and nothing was rewritten');
   }
   // and a directory somebody else made is never replaced.
   const foreign = path.join(tmp, 'somebody-elses');
@@ -284,7 +291,7 @@ test('install copies the plugin to a stable place, links the CLI and the Codex s
   assert.match(removed.stdout, /removed .*home-bin\/agent-bus/);
   assert.ok(!fs.existsSync(dirs.AGENT_BUS_HOME) && !fs.existsSync(cli));
   fs.writeFileSync(cli, 'my own script');
-  assert.match(install().stdout, /SKIPPED .* a regular file is already there/);
+  assert.match(install().stdout, /SKIPPED .* a regular file that agent-bus did not write is already there/);
   install('--uninstall');
   assert.equal(fs.readFileSync(cli, 'utf8'), 'my own script');
 });
@@ -292,7 +299,7 @@ test('install copies the plugin to a stable place, links the CLI and the Codex s
 test('install --link points straight at the source, for a clone that git pull keeps current', () => {
   const dirs = { AGENT_BUS_HOME: path.join(tmp, 'share-link'), AGENT_BUS_BIN_DIR: path.join(tmp, 'link-bin'), AGENT_BUS_CODEX_SKILLS_DIR: path.join(tmp, 'link-skills') };
   assert.equal(run(['install', '--link'], { extraEnv: dirs }).status, 0);
-  assert.equal(fs.readlinkSync(path.join(dirs.AGENT_BUS_BIN_DIR, 'agent-bus')), fs.realpathSync(CLI));
+  assert.match(fs.readFileSync(path.join(dirs.AGENT_BUS_BIN_DIR, 'agent-bus'), 'utf8'), new RegExp(`exec "\\$NODE" "${fs.realpathSync(CLI)}"`));
   assert.ok(!fs.existsSync(dirs.AGENT_BUS_HOME), 'nothing is copied in link mode');
   run(['install', '--link', '--uninstall'], { extraEnv: dirs });
   assert.ok(!fs.existsSync(path.join(dirs.AGENT_BUS_BIN_DIR, 'agent-bus')));
@@ -570,6 +577,12 @@ test('install replaces the 1.x reviewer skill link and lets a Codex chat write b
   fs.symlinkSync(path.join(tmp, 'somewhere'), mine);
   assert.match(install().stdout, /removed  .*agent-bus-reviewer — the Codex skill is now "agent-bus"/);
   assert.ok(!fs.existsSync(old) && fs.lstatSync(mine).isSymbolicLink(), 'only the link install itself made');
+  // A 1.x symlink on PATH gives way to the launcher, without a word about somebody else's file.
+  const cli2 = path.join(dirs.AGENT_BUS_BIN_DIR, 'agent-bus');
+  fs.unlinkSync(cli2);
+  fs.symlinkSync(path.join(dirs.AGENT_BUS_HOME, 'bin', 'agent-bus'), cli2);
+  assert.match(install().stdout, /wrote   .*bin-2\/agent-bus/);
+  assert.ok(!fs.lstatSync(cli2).isSymbolicLink());
 
   const config = path.join(dirs.CODEX_HOME, 'config.toml');
   fs.mkdirSync(dirs.CODEX_HOME, { recursive: true });

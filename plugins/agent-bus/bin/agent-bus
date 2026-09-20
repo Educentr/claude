@@ -877,10 +877,11 @@ function install() {
   const binDir = path.resolve(process.env.AGENT_BUS_BIN_DIR || path.join(os.homedir(), '.local', 'bin'));
   const skillsDir = path.resolve(process.env.AGENT_BUS_CODEX_SKILLS_DIR || path.join(os.homedir(), '.agents', 'skills'));
   const marker = path.join(home, '.installed-by-agent-bus');
-  const links = (root) => [[path.join(binDir, 'agent-bus'), path.join(root, 'bin', 'agent-bus')], [path.join(skillsDir, 'agent-bus'), path.join(root, 'codex', 'skills', 'agent-bus')]];
+  const cli = path.join(binDir, 'agent-bus');
+  const links = (root) => [[path.join(skillsDir, 'agent-bus'), path.join(root, 'codex', 'skills', 'agent-bus')]];
   // 1.x installed the Codex skill under its old, reviewer-only name; leaving it would give Codex
   // two skills for one channel. Removed only when it still points into a place install manages.
-  const legacy = (root) => [[path.join(skillsDir, 'agent-bus-reviewer'), path.join(root, 'codex', 'skills', 'agent-bus-reviewer')]];
+  const legacy = (root) => [[path.join(skillsDir, 'agent-bus-reviewer'), path.join(root, 'codex', 'skills', 'agent-bus-reviewer')], [cli, path.join(root, 'bin', 'agent-bus')]];
   const isLink = (f) => { try { return fs.lstatSync(f).isSymbolicLink(); } catch { return false; } };
 
   // One install or uninstall at a time, whatever the mode: two would each undo the other's work.
@@ -888,6 +889,14 @@ function install() {
   const busy = `${home}.installing`;
   try { fs.mkdirSync(busy); } catch (e) { if (e.code !== 'EEXIST') throw e; die(`another install is running (${busy}) — if it is not, remove that directory`); }
   process.on('exit', () => { try { fs.rmdirSync(busy); } catch { /* gone */ } });
+
+  // `agent-bus` is a Node script, and the Node that runs it is often one a PATH does not carry —
+  // nvm's, or a version manager's. A symlink would then be a file Codex cannot execute at all
+  // ("env: node: No such file or directory"), and the channel would look broken from that side.
+  // So what goes on PATH is a shell launcher: this Node first, whatever `node` resolves to after.
+  const MARK = '# written by agent-bus install';
+  const launcher = (target) => `#!/bin/sh\n${MARK} — run install again to change it, or delete this file.\nNODE="\${AGENT_BUS_NODE:-${process.execPath}}"\n[ -x "$NODE" ] || NODE="$(command -v node 2>/dev/null)"\n[ -n "$NODE" ] || { echo "agent-bus: no Node to run with — looked for ${process.execPath} and for node on PATH. Install Node, or set AGENT_BUS_NODE." >&2; exit 127; }\nexec "$NODE" "${target}" "$@"\n`;
+  const ours = (f) => { try { return fs.readFileSync(f, 'utf8').includes(MARK); } catch { return false; } };
 
   if (opts.uninstall) {
     // Only what points into a place `install` manages: never a file or a link somebody else made.
@@ -901,6 +910,7 @@ function install() {
       if (roots.some((r) => make(r)[i][1] === target)) { fs.unlinkSync(link); console.log(`removed ${link}`); }
     });
     drop(links); drop(legacy);
+    if (ours(cli)) { fs.unlinkSync(cli); console.log(`removed ${cli}`); }
     if (fs.existsSync(marker)) { fs.rmSync(home, { recursive: true, force: true }); console.log(`removed ${home}`); }
     return console.log('Stop any running listener yourself (agent-bus stop). The mailbox and its replies were not touched.');
   }
@@ -927,10 +937,12 @@ function install() {
     console.log(`copied  agent-bus ${version} -> ${home}`);
     root = home;
   }
-  for (const [link] of legacy(root)) {
-    if (!isLink(link)) continue;
-    const target = path.resolve(path.dirname(link), fs.readlinkSync(link));
-    if ([home, pluginRoot, root].some((r) => legacy(r)[0][1] === target)) { fs.unlinkSync(link); console.log(`removed  ${link} — the Codex skill is now "agent-bus"`); }
+  {
+    const [link] = legacy(root)[0];                       // the Codex skill under its 1.x name
+    if (isLink(link)) {
+      const target = path.resolve(path.dirname(link), fs.readlinkSync(link));
+      if ([home, pluginRoot, root].some((r) => legacy(r)[0][1] === target)) { fs.unlinkSync(link); console.log(`removed  ${link} — the Codex skill is now "agent-bus"`); }
+    }
   }
   for (const [link, target] of links(root)) {
     fs.mkdirSync(path.dirname(link), { recursive: true });
@@ -938,6 +950,16 @@ function install() {
     try { fs.unlinkSync(link); } catch { /* not there */ }
     fs.symlinkSync(target, link);
     console.log(`linked  ${link} -> ${target}`);
+  }
+  // Somebody else's file is never replaced; a launcher of ours, or the symlink 2.1 and earlier
+  // put there, is.
+  const target = path.join(root, 'bin', 'agent-bus');
+  fs.mkdirSync(binDir, { recursive: true });
+  if (fs.existsSync(cli) && !isLink(cli) && !ours(cli)) console.log(`SKIPPED ${cli} — a regular file that agent-bus did not write is already there. Move it away and run install again.`);
+  else {
+    try { fs.unlinkSync(cli); } catch { /* not there */ }
+    fs.writeFileSync(cli, launcher(target), { mode: 0o755 });
+    console.log(`wrote   ${cli} -> ${target} (run with ${process.execPath})`);
   }
   if (!(process.env.PATH || '').split(path.delimiter).includes(binDir)) console.log(`NOTE: ${binDir} is not on PATH — add it, or Codex will not find agent-bus.`);
 

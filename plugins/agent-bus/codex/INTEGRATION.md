@@ -43,7 +43,10 @@ agent-bus doctor
 ```
 
 Either way you get `~/.local/bin/agent-bus` and the skill `~/.agents/skills/agent-bus` (a link
-left by 1.x under the old name `agent-bus-reviewer` is removed).
+left by 1.x under the old name `agent-bus-reviewer` is removed). What lands on `PATH` is a small
+launcher, not a symlink: it remembers the Node that installed it and falls back to `node` from
+`PATH`, so a Codex session that does not inherit your shell — and therefore has no nvm on `PATH` —
+can still run it. Reinstall after changing Node versions, or set `AGENT_BUS_NODE`.
 
 **So that a Codex chat can answer**, the mailbox must be writable from it — Codex runs under
 `workspace-write`, which allows the workspace and nothing else:

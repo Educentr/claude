@@ -6,7 +6,7 @@ Marketplace of Claude Code plugins for API development workflows.
 
 | Plugin | Description | Version |
 |--------|-------------|---------|
-| [agent-bus](./plugins/agent-bus) | Claude Code ↔ Codex: a channel into the Codex chat you have open (or a background one), agent-to-agent questions, round-based code review | 2.1.1 |
+| [agent-bus](./plugins/agent-bus) | Claude Code ↔ Codex: a channel into the Codex chat you have open (or a background one), agent-to-agent questions, round-based code review | 2.1.2 |
 | [api-tools](./plugins/api-tools) | Convert API documentation to OpenAPI specs | 1.0.0 |
 | [go-project-starter](./plugins/go-project-starter) | Generate Go microservices from YAML configs | 1.0.0 |
 

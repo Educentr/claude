@@ -131,6 +131,11 @@ push, merge or deploy.
 - **One consumer per endpoint** is enforced for `connect` and `serve-codex`. A bare
   `agent-bus wait <endpoint>` takes whatever is in that inbox without registering: pointing two of
   those at one name is the caller's business.
+- **The CLI needs a Node to run it.** `install` puts a launcher on `PATH` that remembers the Node
+  it was installed with and falls back to whatever `node` resolves to — because a Node from nvm or
+  another version manager is invisible to a session started outside your shell, and a plain
+  symlink would simply fail to execute there. `AGENT_BUS_NODE` overrides it; reinstall after
+  changing Node versions.
 - **A background listener is a detached process, but not an immortal one.** Started from inside an
   agent's sandboxed shell it may be killed when that shell's process tree is cleaned up — the log
   then simply stops after `serving "…"`, with no error, and `agent-bus doctor` shows the endpoint
