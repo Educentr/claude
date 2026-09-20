@@ -131,6 +131,12 @@ push, merge or deploy.
 - **One consumer per endpoint** is enforced for `connect` and `serve-codex`. A bare
   `agent-bus wait <endpoint>` takes whatever is in that inbox without registering: pointing two of
   those at one name is the caller's business.
+- **A background listener is a detached process, but not an immortal one.** Started from inside an
+  agent's sandboxed shell it may be killed when that shell's process tree is cleaned up — the log
+  then simply stops after `serving "…"`, with no error, and `agent-bus doctor` shows the endpoint
+  free. Observed twice; a listener started from an ordinary terminal (or from a session whose shell
+  does not reap descendants) stays up for hours. If yours keeps dying, start it from a terminal —
+  or use a live chat, which has no such process to lose.
 
 Not in this version: an MCP server, a scheduler, a queue service, a native Codex plugin manifest.
 
