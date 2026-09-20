@@ -351,6 +351,20 @@ test('a check that FAILED is not "the server is gone": no signal and no unlock o
   assert.equal(JSON.parse(fs.readFileSync(lock('codex-b'), 'utf8')).pid, serverB.pid);
   // …and --force is for a file that is not a lock, never a way round one that is.
   assert.match(run(['unlock', 'codex-b', '--force'], { extraEnv: deafPs }).stderr, /could not be verified/);
+
+  // 2b. A ps that IS there but exits 1 with a complaint — "no such process" for one ps, "illegal
+  //     option" for another. Its silence proves nothing about a process that kill(0) can see.
+  const grumpy = path.join(tmp, 'grumpy-ps');
+  fs.mkdirSync(grumpy);
+  fs.writeFileSync(path.join(grumpy, 'ps'), '#!/bin/sh\necho "ps: illegal option -- o" >&2\nexit 1\n', { mode: 0o755 });
+  const grumpyPs = { PATH: `${grumpy}:${process.env.PATH}` };
+  for (const args of [['stop', 'codex-b'], ['unlock', 'codex-b'], ['unlock', 'codex-b', '--force']]) {
+    const r = run(args, { extraEnv: grumpyPs });
+    assert.equal(r.status, 1, args.join(' '));
+    assert.match(r.stderr, /could not be verified/, args.join(' '));
+  }
+  assert.equal(serverB.exitCode, null);
+  assert.equal(JSON.parse(fs.readFileSync(lock('codex-b'), 'utf8')).pid, serverB.pid);
   assert.match(run(['unlock', 'codex-b', '--force']).stderr, /is running — stop that server instead/);
 
   // 3. Started under one time zone and locale, stopped under another: still the same launch.

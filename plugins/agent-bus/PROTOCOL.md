@@ -23,7 +23,8 @@ locks/<endpoint>.pid            the one server of an endpoint: `{pid, started}`,
                                 a signal is sent only to a pid that runs serve-codex AND started
                                 when the lock says it did (ps asked under a pinned locale and time
                                 zone). A check that fails is "unknown", never "gone": no signal and
-                                no unlock rest on it
+                                no unlock rest on it. Only kill(pid, 0) → ESRCH proves a process
+                                absent; a ps that exits non-zero or prints nothing proves nothing
 logs/<id>.<attempt>.jsonl       serve-codex: the event trace of one attempt
 oversize/<id>.txt               a reply that was over the limit, whole
 ```

@@ -210,14 +210,18 @@ const pluginRoot = path.dirname(path.dirname(fs.realpathSync(process.argv[1])));
 
 const lockFile = (me) => path.join(dir('locks'), `${name(me, 'endpoint')}.pid`);
 
-// What `ps` says about a pid: a string ('' when there is no such process), or null when ps itself
-// could not be asked. The environment is pinned — a start time printed under another locale or
-// time zone must not look like another launch.
+// What `ps` says about a pid — or null whenever it said nothing usable: it could not be run, it
+// exited non-zero (which is "no such process" for one ps and "unsupported option" for another),
+// or it printed nothing. ps is never the witness that a process is ABSENT; only kill(pid, 0)
+// failing with ESRCH is. The environment is pinned — a start time printed under another locale
+// or time zone must not look like another launch.
 function ps(pid, field) {
   const r = spawnSync('ps', ['-o', `${field}=`, '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC0' } });
-  if (r.error || (r.status !== 0 && r.status !== 1)) return null;      // 1 = no such process; anything else = no answer
-  return r.stdout.trim();
+  return r.error || r.status !== 0 || !r.stdout.trim() ? null : r.stdout.trim();
 }
+
+// true, false (ESRCH — the one proof of absence), or null when even that could not be told.
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'ESRCH' ? false : null; } };
 
 // {pid, started}, null when there is no lock, or {malformed: true}. `started` is what ps said
 // about that pid when the server took the lock: a pid alone says nothing after a crash — the
@@ -239,13 +243,14 @@ function readLock(me) {
 //             pid is not ours to ask about). Unknown is never treated as gone: neither a signal
 //             nor an ordinary unlock may rest on a check that failed.
 function holder(lock) {
-  try { process.kill(lock.pid, 0); } catch (e) { return e.code === 'ESRCH' ? 'gone' : 'unknown'; }
+  const silent = () => (alive(lock.pid) === false ? 'gone' : 'unknown');   // ps said nothing: did the process exit meanwhile?
+  if (alive(lock.pid) !== true) return silent();
   const command = ps(lock.pid, 'command');
-  if (command === null) return 'unknown';
+  if (command === null) return silent();
   if (!/agent-bus.* serve-codex/.test(command)) return 'gone';
   if (!lock.started) return 'unknown';                       // an old lock: a server, but WHICH launch cannot be told
   const started = ps(lock.pid, 'lstart');
-  if (started === null || started === '') return 'unknown';
+  if (started === null) return silent();
   return started === lock.started ? 'ours' : 'gone';
 }
 
@@ -422,9 +427,9 @@ function stop(me) {
   process.kill(held.pid, 'SIGTERM');
   // Honoured between requests: a run in progress finishes (or hits --exec-timeout) first.
   for (const end = Date.now() + timeoutS * 1000; Date.now() < end; sleep(200)) {
-    if (holder(held) !== 'ours') return console.log(`stopped the server of "${me}" (pid ${held.pid})`);
+    if (holder(held) === 'gone') return console.log(`stopped the server of "${me}" (pid ${held.pid})`);   // confirmed, not assumed
   }
-  die(`pid ${held.pid} is still finishing a request after ${timeoutS}s — it will exit when that request ends`, 2);
+  die(`pid ${held.pid} was told to stop, but its exit is not confirmed after ${timeoutS}s — it finishes the request in progress first; check with: agent-bus doctor`, 2);
 }
 
 // ---- install ----------------------------------------------------------------------------------
