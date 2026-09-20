@@ -241,6 +241,65 @@ test('a lock left by a dead server is never taken over silently — it is remove
   assert.match(run(['unlock', 'codex-stale']).stdout, /is not locked/);
 });
 
+test('install copies the plugin to a stable place, links the CLI and the Codex skill to it, and the installed CLI works', () => {
+  const dirs = { AGENT_BUS_HOME: path.join(tmp, 'share', 'agent-bus'), AGENT_BUS_BIN_DIR: path.join(tmp, 'home-bin'), AGENT_BUS_CODEX_SKILLS_DIR: path.join(tmp, 'skills'), CODEX_HOME: path.join(tmp, 'codex-home') };
+  const install = (...args) => run(['install', ...args], { extraEnv: dirs });
+  const first = install();
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, /copied  agent-bus \d+\.\d+\.\d+ -> /);
+  const cli = path.join(dirs.AGENT_BUS_BIN_DIR, 'agent-bus');
+  assert.equal(fs.readlinkSync(cli), path.join(dirs.AGENT_BUS_HOME, 'bin', 'agent-bus'));
+  assert.equal(fs.readlinkSync(path.join(dirs.AGENT_BUS_CODEX_SKILLS_DIR, 'agent-bus-reviewer')), path.join(dirs.AGENT_BUS_HOME, 'codex', 'skills', 'agent-bus-reviewer'));
+  // The copy is self-sufficient: the installed CLI finds ITS policy, not the source's.
+  const doctor = spawnSync(process.execPath, [cli, 'doctor'], { encoding: 'utf8', env: { ...env, ...dirs } });
+  assert.ok(doctor.stdout.includes(`ok   policy ${path.join(fs.realpathSync(dirs.AGENT_BUS_HOME), 'policies', 'reviewer.md')}`), doctor.stdout);
+  assert.equal(install().status, 0, 'running it again updates the copy');
+  // …but the installed copy cannot install itself over itself,
+  assert.match(spawnSync(process.execPath, [cli, 'install'], { encoding: 'utf8', env: { ...env, ...dirs } }).stderr, /this is the installed copy/);
+  // and a directory somebody else made is never replaced.
+  const foreign = path.join(tmp, 'somebody-elses');
+  fs.mkdirSync(foreign);
+  assert.match(run(['install'], { extraEnv: { ...dirs, AGENT_BUS_HOME: foreign } }).stderr, /was not made by agent-bus install/);
+
+  // The AGENTS.md block: only on request, and only once — above it the user's own text stays.
+  fs.mkdirSync(dirs.CODEX_HOME);
+  fs.writeFileSync(path.join(dirs.CODEX_HOME, 'AGENTS.md'), '# mine\n');
+  assert.match(install('--agents-md').stdout, /added   the \[agent-bus\] block/);
+  assert.match(install('--agents-md').stdout, /kept .* already there/);
+  const agents = fs.readFileSync(path.join(dirs.CODEX_HOME, 'AGENTS.md'), 'utf8');
+  assert.ok(agents.startsWith('# mine\n') && agents.split('## Messages marked [agent-bus]').length === 2);
+
+  // Uninstall removes what install made — and nothing that is somebody's own file.
+  const removed = install('--uninstall');
+  assert.match(removed.stdout, /removed .*home-bin\/agent-bus/);
+  assert.ok(!fs.existsSync(dirs.AGENT_BUS_HOME) && !fs.existsSync(cli));
+  fs.writeFileSync(cli, 'my own script');
+  assert.match(install().stdout, /SKIPPED .* a regular file is already there/);
+  install('--uninstall');
+  assert.equal(fs.readFileSync(cli, 'utf8'), 'my own script');
+});
+
+test('install --link points straight at the source, for a clone that git pull keeps current', () => {
+  const dirs = { AGENT_BUS_HOME: path.join(tmp, 'share-link'), AGENT_BUS_BIN_DIR: path.join(tmp, 'link-bin'), AGENT_BUS_CODEX_SKILLS_DIR: path.join(tmp, 'link-skills') };
+  assert.equal(run(['install', '--link'], { extraEnv: dirs }).status, 0);
+  assert.equal(fs.readlinkSync(path.join(dirs.AGENT_BUS_BIN_DIR, 'agent-bus')), fs.realpathSync(CLI));
+  assert.ok(!fs.existsSync(dirs.AGENT_BUS_HOME), 'nothing is copied in link mode');
+  run(['install', '--link', '--uninstall'], { extraEnv: dirs });
+  assert.ok(!fs.existsSync(path.join(dirs.AGENT_BUS_BIN_DIR, 'agent-bus')));
+});
+
+test('serve-codex --detach returns once the endpoint is held, the server answers, and stop releases the endpoint', () => {
+  const started = run(['serve-codex', '--cd', project, '--endpoint', 'codex-detached', '--detach', '--exec-timeout', '3']);
+  assert.equal(started.status, 0, started.stderr);
+  const pid = Number(started.stdout.match(/as pid (\d+)/)[1]);
+  assert.equal(fs.readFileSync(path.join(bus, 'locks', 'codex-detached.pid'), 'utf8'), String(pid));
+  assert.equal(run(['ask', 'codex-detached', 'anyone there?', '--timeout', '20']).status, 0);
+  assert.match(run(['serve-codex', '--cd', project, '--endpoint', 'codex-detached', '--detach']).stderr, /did not start[\s\S]*already served by pid/);
+  assert.match(run(['stop', 'codex-detached', '--timeout', '20']).stdout, /stopped the server of "codex-detached"/);
+  assert.ok(!fs.existsSync(path.join(bus, 'locks', 'codex-detached.pid')));
+  assert.match(run(['stop', 'codex-detached']).stdout, /is not served/);
+});
+
 test('recover lists what was claimed and never answered, and puts one back only when told to', () => {
   const id = run(['send', 'codex-crashed', 'half done?']).stdout.trim();
   run(['wait', 'codex-crashed', '--timeout', '5'], { as: 'codex-crashed' });          // claimed, then the agent died

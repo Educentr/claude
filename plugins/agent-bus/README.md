@@ -16,6 +16,7 @@ Claude Code ──ask──▶ ~/.local/state/agent-bus ──▶ agent-bus serv
 | `bin/agent-bus` | the CLI. Enabling the plugin puts it on Claude Code's Bash `PATH` |
 | `skills/agent-bus` | for Claude: asking, waiting in the background, replying, timeouts, what another agent's message may and may not change, reporting every exchange to the user |
 | `skills/codex-review` | for Claude as author: the review request, handling `REQUEST_CHANGES`, five rounds then the user, what `APPROVE` does not permit |
+| `skills/install`, `skills/serve`, `skills/uninstall` | commands only the user runs: `/agent-bus:install`, `/agent-bus:serve [stop\|status]`, `/agent-bus:uninstall` |
 | [`PROTOCOL.md`](PROTOCOL.md) | the single source: envelope, message types, limits, failure kinds, review format |
 | [`policies/reviewer.md`](policies/reviewer.md) | the single source for what a served Codex may do; prepended to every run |
 | [`codex/`](codex/INTEGRATION.md) | everything for the Codex side: integration guide, installer, its skill, an optional `AGENTS.md` block |
@@ -30,16 +31,20 @@ Claude Code:
 /plugin install agent-bus@educentr-marketplace
 ```
 
-Codex (a different tool — it does not see Claude's plugins), from a clone of this repository:
+Codex is a different tool — it does not see Claude's plugins — so the CLI and its skill have to be
+put where Codex looks. From Claude Code, in the project you want reviewed:
 
-```sh
-plugins/agent-bus/codex/install.sh && agent-bus doctor
+```
+/agent-bus:install      copies the plugin to ~/.local/share/agent-bus, links the CLI and the Codex skill
+/agent-bus:serve        starts the listener for this project, detached; `stop` and `status` as arguments
 ```
 
-Then the user starts a listener for the project — agents do not spawn each other:
+Both are commands only the user can run: one changes your home directory, the other starts another
+agent — agents do not spawn each other. Without Claude Code, from a clone of this repository:
 
 ```sh
-agent-bus serve-codex --cd /abs/path/to/project
+plugins/agent-bus/codex/install.sh && agent-bus doctor      # links into the clone; git pull updates it
+agent-bus serve-codex --cd /abs/path/to/project --detach    # agent-bus stop   to end it
 ```
 
 Full guide: [`codex/INTEGRATION.md`](codex/INTEGRATION.md).

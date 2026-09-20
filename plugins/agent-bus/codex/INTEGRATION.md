@@ -26,19 +26,31 @@ this file is about installation and operation and does not restate them.
 
 ## 3. Install
 
-From a clone of this repository:
+Two ways, one implementation (`agent-bus install`):
 
 ```sh
-plugins/agent-bus/codex/install.sh      # symlinks; --uninstall removes them
+# from Claude Code, with the plugin enabled — run by the user:
+/agent-bus:install
+
+# or from a clone of this repository:
+plugins/agent-bus/codex/install.sh      # = agent-bus install --link; --uninstall removes it again
 agent-bus doctor
 ```
 
-It links `~/.local/bin/agent-bus` and the skill `~/.agents/skills/agent-bus-reviewer`. Links, not
-copies: the CLI finds `policies/reviewer.md` next to itself, and `git pull` updates everything. It
-refuses to overwrite a regular file and **never edits your instructions**.
+Either way you get `~/.local/bin/agent-bus` and the skill `~/.agents/skills/agent-bus-reviewer`.
 
-Optional, for all projects: paste [`AGENTS.snippet.md`](AGENTS.snippet.md) into
-`~/.codex/AGENTS.md`. It is conditional — nothing changes until a message marked `[agent-bus]`
+- **From the plugin** the files are **copied** to `~/.local/share/agent-bus` and linked from there:
+  a plugin's own directory is a cache that an update may move. After a plugin update run
+  `/agent-bus:install` again and restart the listener.
+- **From a clone** (`--link`) the links point straight into the clone, and `git pull` updates
+  everything.
+
+The CLI finds `policies/reviewer.md` next to itself in both cases. It refuses to overwrite a regular
+file, never replaces a directory it did not make, and **edits your instructions only when asked**:
+`agent-bus install --agents-md` (the slash command asks first) adds the block below once.
+
+Optional, for all projects: [`AGENTS.snippet.md`](AGENTS.snippet.md) in `~/.codex/AGENTS.md` — by
+hand, or with `--agents-md`. It is conditional — nothing changes until a message marked `[agent-bus]`
 arrives. Project-specific limits (which checks a reviewer may run, where worktrees live) belong in
 that repository's own `AGENTS.md`. Codex builds its instruction chain when it starts: restart an
 open session after changing either file.
@@ -48,9 +60,9 @@ Claude Code needs no install step: enabling the plugin puts `bin/` on its Bash t
 ## 4. Quick start — two terminals
 
 ```sh
-# Terminal 1 — the user starts the listener for a project
+# Terminal 1 — the user starts the listener for a project (from Claude Code: /agent-bus:serve)
 cd /abs/path/to/project
-agent-bus serve-codex --cd "$PWD"
+agent-bus serve-codex --cd "$PWD"             # add --detach to let it outlive the terminal
 
 # Terminal 2 — what Claude Code does
 AGENT_BUS_NAME=claude-demo agent-bus ask codex "Which file decides the retry policy?" --timeout 600
@@ -72,6 +84,10 @@ The event trace goes to `logs/<id>.jsonl` on disk. Options: `--endpoint NAME` (d
 `--cd DIR` (project root; worktrees outside it are refused), `--policy FILE` (default: the shipped
 reviewer policy; a message cannot choose one), `--exec-timeout S` (default 1800), `--max-rounds N`
 (default 5: the most review rounds any conversation may ask for).
+`--detach` starts the server as a process of its own, prints its pid and log
+(`<mailbox>/serve-<endpoint>.log`) once the endpoint is held, and returns; `agent-bus stop
+[endpoint]` ends it.
+
 Stopping: Ctrl-C in the listener's terminal reaches Codex as well (the signal goes to the whole
 foreground group), so the run ends and the listener exits, releasing its endpoint. A signal sent
 to the listener alone (`kill <pid>`) is honoured **between** requests — a run in progress is not
@@ -145,7 +161,9 @@ The old single thread is not carried over: conversations start fresh, one thread
 
 ## 11. Updating and removing
 
-`git pull` in the clone updates the CLI, policy, protocol and skill at once (they are links). Stop
-the listener (Ctrl-C) before replacing the CLI under it, then start it again. `install.sh
---uninstall` removes only the links that point into this clone; the mailbox and every reply in it
+`git pull` in the clone updates the CLI, policy, protocol and skill at once (they are links); after
+a plugin update, `/agent-bus:install` refreshes the copy. A running listener keeps the code it has
+loaded: `agent-bus stop`, then start it again. `/agent-bus:uninstall` (or `install.sh --uninstall`,
+or `agent-bus install --uninstall`) removes only the links that point into a place `install`
+manages, and the copy only if `install` made it; the mailbox and every reply in it
 are left alone — delete `~/.local/state/agent-bus` yourself when you no longer need the history.

@@ -10,7 +10,10 @@
 //   recover <me> [--requeue <id>]     list claimed-but-unanswered messages; put one back
 //   unlock <endpoint>                 remove the lock a dead server left behind
 //   serve-codex [--endpoint codex] [--cd DIR] [--policy FILE] [--exec-timeout S] [--max-rounds N]
-//                                     answer every message for the endpoint with `codex exec`
+//               [--detach]            answer every message for the endpoint with `codex exec`
+//   stop [endpoint]                   stop the server of an endpoint (default codex)
+//   install [--link] [--agents-md]    put the CLI and the Codex skill where Codex finds them
+//   install --uninstall               remove what `install` put there (the mailbox is left alone)
 //   doctor                            check the mailbox, Node and the Codex CLI
 //
 // Message options: --type question|review|status  --conversation ID  --no-reply
@@ -26,7 +29,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const VERSION = 1;
 const MAX_DEPTH = 3;               // a reply to a reply to a reply — two agents cannot ping-pong forever
@@ -63,6 +66,7 @@ const opts = {
   round: flag('round'), maxRounds: flag('max-rounds'), worktree: flag('worktree'), base: flag('base'), head: flag('head'),
   endpoint: flag('endpoint', 'codex'), cd: flag('cd', process.cwd()), policy: flag('policy'),
   execTimeout: Number(flag('exec-timeout', 1800)), requeue: flag('requeue'),
+  detach: has('detach'), link: has('link'), agentsMd: has('agents-md'), uninstall: has('uninstall'),
 };
 const [cmd, a, ...rest] = argv;
 
@@ -320,6 +324,105 @@ function runCodex(m, cwd, policy, root, cap) {
   return result;
 }
 
+// Starts this same command again as a process of its own and returns once it holds the endpoint:
+// the listener then outlives the terminal (or the agent session) that started it.
+function serveDetached() {
+  const me = name(opts.endpoint, '--endpoint');
+  const log = path.join(mailbox(), `serve-${me}.log`);
+  const fd = fs.openSync(log, 'a');
+  const args = process.argv.slice(2).filter((x) => x !== '--detach');
+  const child = spawn(process.execPath, [fs.realpathSync(process.argv[1]), ...args], { detached: true, stdio: ['ignore', fd, fd], cwd: process.cwd() });
+  child.unref();
+  let exited = null;
+  child.on('exit', (code) => { exited = code; });
+  const lock = lockFile(me);
+  const started = Date.now();
+  const tick = () => {
+    if (fs.existsSync(lock) && fs.readFileSync(lock, 'utf8') === String(child.pid)) { console.log(`serving "${me}" as pid ${child.pid}; log ${log}; stop with: agent-bus stop ${me}`); process.exit(0); }
+    if (exited !== null || Date.now() - started > 10000) die(`the server for "${me}" did not start — see ${log}:\n${fs.readFileSync(log, 'utf8').trim().split('\n').slice(-3).join('\n')}`);
+    setTimeout(tick, 100);
+  };
+  tick();
+}
+
+function stop(me) {
+  const lock = lockFile(me);
+  if (!fs.existsSync(lock)) return console.log(`endpoint "${me}" is not served`);
+  const pid = Number(fs.readFileSync(lock, 'utf8'));
+  if (!pidAlive(pid)) die(`endpoint "${me}" has a lock left by pid ${pid}, which is not running — agent-bus unlock ${me}`);
+  process.kill(pid, 'SIGTERM');
+  // Honoured between requests: a run in progress finishes (or hits --exec-timeout) first.
+  for (const end = Date.now() + timeoutS * 1000; Date.now() < end; sleep(200)) {
+    if (!pidAlive(pid)) return console.log(`stopped the server of "${me}" (pid ${pid})`);
+  }
+  die(`pid ${pid} is still finishing a request after ${timeoutS}s — it will exit when that request ends`, 2);
+}
+
+// ---- install ----------------------------------------------------------------------------------
+
+// Codex is another program: it does not see Claude Code's plugins, so the CLI and the Codex-side
+// skill have to be somewhere Codex looks. From a Claude Code plugin the source directory is a
+// cache that an update may move, so the default is a COPY in a stable place; `--link` points
+// straight at the source instead, for a git clone that `git pull` keeps current.
+function install() {
+  const home = path.resolve(process.env.AGENT_BUS_HOME || path.join(os.homedir(), '.local', 'share', 'agent-bus'));
+  const binDir = path.resolve(process.env.AGENT_BUS_BIN_DIR || path.join(os.homedir(), '.local', 'bin'));
+  const skillsDir = path.resolve(process.env.AGENT_BUS_CODEX_SKILLS_DIR || path.join(os.homedir(), '.agents', 'skills'));
+  const marker = path.join(home, '.installed-by-agent-bus');
+  const links = (root) => [[path.join(binDir, 'agent-bus'), path.join(root, 'bin', 'agent-bus')], [path.join(skillsDir, 'agent-bus-reviewer'), path.join(root, 'codex', 'skills', 'agent-bus-reviewer')]];
+  const isLink = (f) => { try { return fs.lstatSync(f).isSymbolicLink(); } catch { return false; } };
+
+  if (opts.uninstall) {
+    // Only what points into a place `install` manages: never a file or a link somebody else made.
+    for (const [link] of links(home)) {
+      const roots = [home, pluginRoot, fs.existsSync(home) ? fs.realpathSync(home) : home];
+      if (isLink(link) && roots.some((r) => fs.readlinkSync(link).startsWith(r + path.sep))) { fs.unlinkSync(link); console.log(`removed ${link}`); }
+    }
+    if (fs.existsSync(marker)) { fs.rmSync(home, { recursive: true, force: true }); console.log(`removed ${home}`); }
+    return console.log('Stop any running listener yourself (agent-bus stop). The mailbox and its replies were not touched.');
+  }
+
+  let root = pluginRoot;
+  if (!opts.link) {
+    // Compared as real paths: ~/.local, or a temp directory, may itself be a symlink.
+    if (fs.existsSync(home) && fs.realpathSync(home) === pluginRoot) die(`this is the installed copy (${home}) — run install from the plugin or from a clone to update it`);
+    if (fs.existsSync(home) && !fs.existsSync(marker)) die(`${home} exists and was not made by agent-bus install — refusing to replace it (set AGENT_BUS_HOME to another place)`);
+    const fresh = `${home}.new.${process.pid}`;
+    fs.rmSync(fresh, { recursive: true, force: true });
+    for (const part of ['bin', 'policies', 'codex', 'PROTOCOL.md', 'README.md']) fs.cpSync(path.join(pluginRoot, part), path.join(fresh, part), { recursive: true });
+    fs.chmodSync(path.join(fresh, 'bin', 'agent-bus'), 0o755);
+    let version = 'unknown';
+    try { version = readJson(path.join(pluginRoot, '.claude-plugin', 'plugin.json')).version; } catch { /* a clone without the manifest */ }
+    fs.writeFileSync(path.join(fresh, '.installed-by-agent-bus'), `${version} from ${pluginRoot} at ${new Date().toISOString()}\n`);
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.renameSync(fresh, home);
+    console.log(`copied  agent-bus ${version} -> ${home}`);
+    root = home;
+  }
+  for (const [link, target] of links(root)) {
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    if (fs.existsSync(link) && !isLink(link)) { console.log(`SKIPPED ${link} — a regular file is already there. Move it away and run install again.`); continue; }
+    try { fs.unlinkSync(link); } catch { /* not there */ }
+    fs.symlinkSync(target, link);
+    console.log(`linked  ${link} -> ${target}`);
+  }
+  if (!(process.env.PATH || '').split(path.delimiter).includes(binDir)) console.log(`NOTE: ${binDir} is not on PATH — add it, or Codex will not find agent-bus.`);
+
+  const snippet = path.join(root, 'codex', 'AGENTS.snippet.md');
+  if (opts.agentsMd) {
+    // Only on request, and only once: the block is conditional, but the file is the user's.
+    const file = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'AGENTS.md');
+    const have = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+    if (have.includes('## Messages marked [agent-bus]')) console.log(`kept    ${file} — the [agent-bus] block is already there`);
+    else {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `${have}${have && !have.endsWith('\n') ? '\n' : ''}${have ? '\n' : ''}${fs.readFileSync(snippet, 'utf8')}`);
+      console.log(`added   the [agent-bus] block to ${file} — restart open Codex sessions`);
+    }
+  } else console.log(`Optional: agent-bus install --agents-md   (adds ${snippet} to ~/.codex/AGENTS.md, once)`);
+  console.log('Next:     agent-bus doctor, then start a listener for your project: agent-bus serve-codex --cd <project> --detach');
+}
+
 async function serveCodex() {
   const me = name(opts.endpoint, '--endpoint');
   const root = fs.realpathSync(opts.cd);
@@ -391,7 +494,9 @@ switch (cmd) {
   case 'reply': reply(a ?? die('usage: reply <id> [text|-]'), text(rest)); break;
   case 'recover': recover(a ?? die('usage: recover <me> [--requeue <id>]')); break;
   case 'unlock': unlock(a ?? die('usage: unlock <endpoint>')); break;
-  case 'serve-codex': serveCodex().catch((e) => die(e.stack ?? String(e))); break;
+  case 'serve-codex': if (opts.detach) serveDetached(); else serveCodex().catch((e) => die(e.stack ?? String(e))); break;
+  case 'stop': stop(a ?? 'codex'); break;
+  case 'install': install(); break;
   case 'doctor': doctor(); break;
-  default: die('usage: agent-bus send|ask|await|acked|wait|reply|recover|unlock|serve-codex|doctor … (see the header of this file)');
+  default: die('usage: agent-bus send|ask|await|acked|wait|reply|recover|unlock|serve-codex|stop|install|doctor … (see the header of this file)');
 }

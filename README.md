@@ -6,7 +6,7 @@ Marketplace of Claude Code plugins for API development workflows.
 
 | Plugin | Description | Version |
 |--------|-------------|---------|
-| [agent-bus](./plugins/agent-bus) | Claude Code ↔ Codex: file mailbox, agent-to-agent questions, round-based code review | 1.0.0 |
+| [agent-bus](./plugins/agent-bus) | Claude Code ↔ Codex: file mailbox, agent-to-agent questions, round-based code review | 1.1.0 |
 | [api-tools](./plugins/api-tools) | Convert API documentation to OpenAPI specs | 1.0.0 |
 | [go-project-starter](./plugins/go-project-starter) | Generate Go microservices from YAML configs | 1.0.0 |
 
@@ -18,6 +18,14 @@ Skills included:
 
 - **agent-bus** — ask another agent, wait in the background, reply, handle timeouts; what a message from an agent may and may not change
 - **codex-review** — review request and verdict format, handling `REQUEST_CHANGES`, five rounds then the user
+
+Commands only the user runs:
+
+| Command | Description |
+|---------|-------------|
+| `/agent-bus:install` | Put the CLI and the Codex-side skill where Codex finds them (copy in `~/.local/share/agent-bus`, links in `~/.local/bin` and `~/.agents/skills`); optionally the `AGENTS.md` block |
+| `/agent-bus:serve` | Start the Codex listener for the current project, detached; `stop` / `status` as arguments |
+| `/agent-bus:uninstall` | Remove what `install` put there; the mailbox is left alone |
 
 ### api-tools
 

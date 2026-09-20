@@ -8,7 +8,7 @@
       "name": "agent-bus",
       "source": "./plugins/agent-bus",
       "description": "Claude Code <-> Codex on one machine: a file mailbox CLI, a skill for talking to another agent, and a round-based code review protocol with a read-only Codex reviewer",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "author": {
         "name": "sklukin"
       }
