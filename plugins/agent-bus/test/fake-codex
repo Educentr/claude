@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+// Stands in for the Codex CLI in the transport test: records how it was called, answers from stdin.
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args[0] === '--version') { console.log('codex-cli 0.0.0-fake'); process.exit(0); }
+if (args[0] === 'login') process.exit(0);
+const out = args[args.indexOf('-o') + 1];
+const prompt = fs.readFileSync(0, 'utf8');
+fs.appendFileSync(process.env.FAKE_CODEX_CALLS, JSON.stringify({ args, cwd: args[args.indexOf('-C') + 1], prompt }) + '\n');
+// A line that merely mentions thread_id must not be taken for the event that starts a thread.
+console.log(JSON.stringify({ type: 'log', message: 'resuming', thread_id: 'WRONG-not-an-event' }));
+console.log(JSON.stringify({ type: 'thread.started', thread_id: `thread-${process.env.AGENT_BUS_NAME}` }));
+if (prompt.includes('PLEASE_HANG')) setTimeout(() => {}, 600000);
+else if (prompt.includes('PLEASE_NO_FINAL')) process.exit(0);
+else if (prompt.includes('PLEASE_FAIL')) { fs.writeFileSync(out, 'half an answer'); process.exit(3); }
+else if (prompt.includes('PLEASE_BE_HUGE')) fs.writeFileSync(out, 'x'.repeat(300 * 1024));
+else fs.writeFileSync(out, 'VERDICT: APPROVE\nREVIEWED_HEAD: ' + (prompt.match(/Head: (\w+)/)?.[1] ?? 'none') + '\n\nBLOCKING\nNone.\n');

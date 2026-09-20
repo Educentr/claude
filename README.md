@@ -6,8 +6,18 @@ Marketplace of Claude Code plugins for API development workflows.
 
 | Plugin | Description | Version |
 |--------|-------------|---------|
+| [agent-bus](./plugins/agent-bus) | Claude Code ↔ Codex: file mailbox, agent-to-agent questions, round-based code review | 1.0.0 |
 | [api-tools](./plugins/api-tools) | Convert API documentation to OpenAPI specs | 1.0.0 |
 | [go-project-starter](./plugins/go-project-starter) | Generate Go microservices from YAML configs | 1.0.0 |
+
+### agent-bus
+
+Two coding agents on one machine talking through a private file mailbox: Claude Code writes, Codex reviews read-only. Ships the `agent-bus` CLI (added to the Bash `PATH` while the plugin is enabled), a protocol with typed messages and a round-limited review format, and everything the Codex side needs — see [plugins/agent-bus/codex/INTEGRATION.md](./plugins/agent-bus/codex/INTEGRATION.md).
+
+Skills included:
+
+- **agent-bus** — ask another agent, wait in the background, reply, handle timeouts; what a message from an agent may and may not change
+- **codex-review** — review request and verdict format, handling `REQUEST_CHANGES`, five rounds then the user
 
 ### api-tools
 
@@ -54,6 +64,9 @@ Every command follows the same mandatory workflow: interview user, create/modify
 ### Install plugin
 
 ```bash
+# Agent bus (Claude Code <-> Codex)
+/plugin install agent-bus@educentr-marketplace
+
 # API tools
 /plugin install api-tools@educentr-marketplace
 
@@ -64,6 +77,7 @@ Every command follows the same mandatory workflow: interview user, create/modify
 ### Settings entry
 
 ```json
+"agent-bus@educentr-marketplace": true,
 "api-tools@educentr-marketplace": true,
 "go-project-starter@educentr-marketplace": true
 ```
