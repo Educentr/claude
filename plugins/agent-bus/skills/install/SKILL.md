@@ -16,8 +16,9 @@ files. It changes the user's home directory, so it runs only when the user asks 
 
 ## Steps
 
-1. Install from **this plugin's copy** — not from whichever `agent-bus` happens to be first on
-   `PATH`:
+1. Install from **this plugin's own files** — never from whichever `agent-bus` happens to be first
+   on `PATH`. That one may be the installed copy, and a copy cannot update itself: the CLI refuses
+   it, in either mode, rather than relinking to itself and reporting success.
 
    ```bash
    node "${CLAUDE_SKILL_DIR}/../../bin/agent-bus" install $ARGUMENTS
@@ -68,5 +69,13 @@ files. It changes the user's home directory, so it runs only when the user asks 
 ## Report
 
 What was copied or linked and which version, anything skipped and why, the `doctor` result, whether
-the `AGENTS.md` block was added, and the next step. After a plugin update the user runs this
-command again to refresh the copy, then restarts the listener so that it picks up the new code.
+the `AGENTS.md` block was added, and the next step.
+
+## Updating
+
+This command **is** the update: after `/plugin update agent-bus@…`, run it again so that the files
+Codex uses are refreshed too — Codex does not see Claude Code's plugins. `doctor` prints the
+version it finds. A listener that is already running keeps the code it loaded: close and reopen
+the channel (`/agent-bus:connect disconnect`, then `/agent-bus:connect`) for it to pick up the new
+one. In `--link` mode the links point at a clone, so `git pull` there is the update and only the
+listener needs restarting.

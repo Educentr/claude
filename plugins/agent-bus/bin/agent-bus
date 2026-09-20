@@ -905,10 +905,16 @@ function install() {
     return console.log('Stop any running listener yourself (agent-bus stop). The mailbox and its replies were not touched.');
   }
 
+  // Whatever the mode: the installer cannot update anything when it IS the installed copy. In
+  // copy mode it would replace that copy with itself; with --link it would point the links back
+  // at the same copy and quietly leave the user on an old version — which is worse, because it
+  // reports success. The source is the plugin directory or a clone, and `agent-bus` on PATH is
+  // not it. Compared as real paths: ~/.local, or a temp directory, may itself be a symlink.
+  if (fs.existsSync(home) && (fs.realpathSync(home) === pluginRoot || pluginRoot.startsWith(fs.realpathSync(home) + path.sep))) {
+    die(`this is the installed copy (${home}) — run the installer from the plugin's own files instead, which is what /agent-bus:install does:\n  node <plugin-or-clone>/plugins/agent-bus/bin/agent-bus install${opts.link ? ' --link' : ''}`);
+  }
   let root = pluginRoot;
   if (!opts.link) {
-    // Compared as real paths: ~/.local, or a temp directory, may itself be a symlink.
-    if (fs.existsSync(home) && fs.realpathSync(home) === pluginRoot) die(`this is the installed copy (${home}) — run install from the plugin or from a clone to update it`);
     if (fs.existsSync(home) && !fs.existsSync(marker)) die(`${home} exists and was not made by agent-bus install — refusing to replace it (set AGENT_BUS_HOME to another place)`);
     const fresh = fs.mkdtempSync(`${home}.new.`);
     for (const part of ['bin', 'policies', 'codex', 'PROTOCOL.md', 'README.md']) fs.cpSync(path.join(pluginRoot, part), path.join(fresh, part), { recursive: true });

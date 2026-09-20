@@ -258,8 +258,14 @@ test('install copies the plugin to a stable place, links the CLI and the Codex s
   const doctor = spawnSync(process.execPath, [cli, 'doctor'], { encoding: 'utf8', env: { ...env, ...dirs } });
   assert.ok(doctor.stdout.includes(`ok   policy ${path.join(fs.realpathSync(dirs.AGENT_BUS_HOME), 'policies', 'peer.md')}`), doctor.stdout);
   assert.equal(install().status, 0, 'running it again updates the copy');
-  // …but the installed copy cannot install itself over itself,
-  assert.match(spawnSync(process.execPath, [cli, 'install'], { encoding: 'utf8', env: { ...env, ...dirs } }).stderr, /this is the installed copy/);
+  // …but the installed copy cannot install itself over itself — in either mode. With --link it
+  // would relink to that same copy and report success, leaving the user on the old version.
+  for (const mode of [[], ['--link']]) {
+    const r = spawnSync(process.execPath, [cli, 'install', ...mode], { encoding: 'utf8', env: { ...env, ...dirs } });
+    assert.equal(r.status, 1, `install ${mode.join(' ')} from the copy`);
+    assert.match(r.stderr, /this is the installed copy/);
+    assert.equal(fs.readlinkSync(cli), path.join(dirs.AGENT_BUS_HOME, 'bin', 'agent-bus'), 'and nothing was relinked');
+  }
   // and a directory somebody else made is never replaced.
   const foreign = path.join(tmp, 'somebody-elses');
   fs.mkdirSync(foreign);

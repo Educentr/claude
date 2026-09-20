@@ -65,6 +65,12 @@ plugins/agent-bus/codex/install.sh && agent-bus doctor      # links into the clo
 agent-bus connect codex --cd /abs/path/to/project           # agent-bus disconnect codex   to close it
 ```
 
+**Updating**: `/plugin update agent-bus@educentr-marketplace`, then `/agent-bus:install` again —
+Codex does not see Claude Code's plugins, so its copy of the CLI and skill is refreshed
+separately. Then reopen any channel that had a background Codex, since a running listener keeps
+the code it loaded. `agent-bus` on `PATH` may be the installed copy, and a copy cannot update
+itself — the installer refuses that rather than relinking to itself.
+
 Full guide: [`codex/INTEGRATION.md`](codex/INTEGRATION.md).
 
 ## Use
