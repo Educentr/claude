@@ -16,9 +16,10 @@ inbox/<endpoint>/<id>.json      queued for an endpoint
 claimed/<endpoint>/<id>.json    taken by that endpoint (moved by rename — one taker wins)
 acks/<id>.json                  read receipt: the TRANSPORT has taken the message
 replies/<id>.json               the reply to message <id>
-conversations/<conv>.json       serve-codex state: Codex thread id, review rounds used
-locks/<endpoint>.pid            the one server of an endpoint
-logs/<id>.jsonl                 serve-codex: the run's event trace
+conversations/<endpoint>.<project-hash>/<conv>.json
+                                serve-codex state: Codex thread id, rounds used, the round limit
+locks/<endpoint>.pid            the one server of an endpoint (created atomically)
+logs/<id>.<attempt>.jsonl       serve-codex: the event trace of one attempt
 oversize/<id>.txt               a reply that was over the limit, whole
 ```
 
@@ -37,6 +38,10 @@ Three identifiers, never mixed up:
 | endpoint | who receives | `codex-review` |
 | conversation | which discussion a message belongs to; carries the round limit | `onei-53-followup` |
 | Codex thread | how a served Codex keeps that discussion's context; one per conversation | (internal) |
+
+A conversation belongs to **one endpoint serving one project**. The same id under another
+endpoint, or after a server was restarted for another project root, is a different conversation:
+it inherits neither the thread nor the round count.
 
 ## Envelope
 
@@ -78,8 +83,11 @@ characters — a review of "HEAD" reviews whatever HEAD has become by the time i
 
 - `ok: true` — an answer. **A review that says `REQUEST_CHANGES` is an answer.**
 - `ok: false` — the run itself failed; `ask` / `await` exit **4** and print `kind`:
-  `exec_failed` (non-zero exit or no final message), `exec_timeout`, `bad_worktree` (not under the
-  server's project root), `round_limit`, `reply_too_large`. None of these is a review verdict.
+  `exec_failed` (non-zero exit or no final message **of this attempt** — every attempt writes its
+  own output file, so a requeued message is never answered by an earlier attempt), `exec_timeout`,
+  `bad_worktree` (not under the server's project root), `bad_envelope` (a message that is not a
+  valid envelope — `send` checks the same, but a file in the inbox need not come from `send`),
+  `round_limit`, `reply_too_large`. None of these is a review verdict.
 
 Waiting is separate from running. `ask` / `await` exit **2** when the wait (`--timeout`, default
 600 s) ends first: the request is still queued or running. **Continue with `agent-bus await <id>`;
@@ -93,7 +101,7 @@ never send it again** — that would run it twice. The run has its own deadline
 | message text | 64 KiB | `send` fails (exit 5). Put logs in a file both sides can read; send the path |
 | reply text | 256 KiB | reply becomes `reply_too_large`, the whole text kept in `oversize/` |
 | reply chain depth | 3 (`$AGENT_BUS_DEPTH`) | `send` refuses (exit 3) — two agents cannot ping-pong forever |
-| review rounds | `max_rounds`, default 5, **per conversation** | `round_limit`; a new thread or a retyped round number does not reset it |
+| review rounds | `max_rounds` of the conversation's **first** review (default 5), never above the server's `--max-rounds` (default 5); whole numbers 1–99 | `round_limit`. A later message cannot raise the limit, and a retyped round number does not reset it. Only a **delivered** review uses a round — a run that failed does not |
 
 ## Review format
 

@@ -70,7 +70,8 @@ with the policy, a header (type, sender, conversation; for a review also round, 
 head) and the message text on stdin. `<dir>` is the review's worktree, or `--cd` for a question.
 The event trace goes to `logs/<id>.jsonl` on disk. Options: `--endpoint NAME` (default `codex`),
 `--cd DIR` (project root; worktrees outside it are refused), `--policy FILE` (default: the shipped
-reviewer policy; a message cannot choose one), `--exec-timeout S` (default 1800).
+reviewer policy; a message cannot choose one), `--exec-timeout S` (default 1800), `--max-rounds N`
+(default 5: the most review rounds any conversation may ask for).
 `AGENT_BUS_REPORT_THREAD=<thread id>` additionally posts a one-line "took / answered / failed"
 status into that Codex chat through `codex queue`; if that fails the reply is still delivered.
 
@@ -91,9 +92,11 @@ nothing. Everything else: [`PROTOCOL.md`](../PROTOCOL.md).
 
 One consumer per endpoint. Give each pair its own names — `claude-<label>` asks
 `codex-<label>`, served by `agent-bus serve-codex --endpoint codex-<label>`. A second server on
-an endpoint exits with `already served by pid …`. The Codex thread is kept **per conversation**
-(`conversations/<id>.json`): a new ticket starts a new thread, a further round resumes the old
-one. Two reviewers may read the same repository at once; only one thread is ever resumed at a
+an endpoint exits with `already served by pid …`. The Codex thread is kept **per conversation**,
+and a conversation belongs to one endpoint serving one project
+(`conversations/<endpoint>.<project-hash>/<id>.json`): a new ticket starts a new thread, a further
+round resumes the old one, and the same id under another endpoint or another project root shares
+nothing. Two reviewers may read the same repository at once; only one thread is ever resumed at a
 time because an endpoint handles its messages one by one. For full isolation use a separate
 `AGENT_BUS_DIR` per pair.
 
@@ -106,17 +109,34 @@ time because an endpoint handles its messages one by one. For full isolation use
 | exit 4 `exec_timeout` | Codex did not finish within `--exec-timeout` | read `logs/<id>.jsonl`; raise the deadline or narrow the request |
 | exit 4 `exec_failed` | non-zero exit or no final message | same trace; check `codex login status` |
 | exit 4 `bad_worktree` | the worktree is not under the server's `--cd` | start the server at a common parent |
-| exit 4 `round_limit` | the conversation has used its rounds | take the open points to the user |
+| exit 4 `round_limit` | the conversation has used its rounds (the limit is fixed by its first review; failed runs do not count) | take the open points to the user |
+| exit 4 `bad_envelope` | not a valid message: a round that is not a number, `max_rounds` over the server's cap, a short SHA | fix the request; the text says which field |
 | server died mid-message | the message sits in `claimed/` with no reply | `agent-bus recover <endpoint>` lists it; `--requeue <id>` runs it **again** — a person decides |
 | chat report failed | `codex queue` unavailable | ignored by design; the reply is in the mailbox |
 
-## 9. Checking an installation
+## 9. Switching from a hand-installed `agent-bus`
+
+An earlier, single-file `agent-bus` used `/tmp/agent-bus`, plain-text replies and one Codex thread
+for everything. The two do not mix: a running old listener keeps executing the old code it has
+loaded, new clients default to another mailbox, an old `await` cannot read the new JSON replies,
+and `/tmp/agent-bus` may fail the new ownership and permission check. Switch both sides together:
+
+1. Let every request in flight be answered (`agent-bus await <id>` on the asking side).
+2. Stop the old listener (Ctrl-C).
+3. Move the old file away — the installer will not overwrite a regular file —
+   `mv ~/.local/bin/agent-bus ~/.local/bin/agent-bus.old`, then run `codex/install.sh`.
+4. Start the new listener: `agent-bus serve-codex --cd /abs/path/to/project`.
+5. Enable the plugin in Claude Code and start a new session, so both sides use the default mailbox.
+
+The old single thread is not carried over: conversations start fresh, one thread each.
+
+## 10. Checking an installation
 
 - Transport only, no model call, nothing leaves the machine:
   `node --test plugins/agent-bus/test/agent-bus.test.mjs` (a fake `codex` on `PATH`).
 - A real round trip, when the user wants one: the quick start above with a harmless question.
 
-## 10. Updating and removing
+## 11. Updating and removing
 
 `git pull` in the clone updates the CLI, policy, protocol and skill at once (they are links). Stop
 the listener (Ctrl-C) before replacing the CLI under it, then start it again. `install.sh

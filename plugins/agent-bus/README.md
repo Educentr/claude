@@ -65,7 +65,9 @@ push, merge or deploy.
 - **Waiting is not running.** When the wait ends first, `await` the same id — resending would run
   the request twice.
 - **One endpoint, one consumer; one conversation, one Codex thread.** Parallel sessions use their
-  own endpoint names.
+  own endpoint names, and a conversation never crosses endpoints or projects.
+- **The round limit cannot be talked up.** It is fixed by a conversation's first review and capped
+  by the server; only delivered reviews count against it.
 - **The policy is chosen by whoever starts the server.** No message can replace or relax it, and
   the prompt is backed by `-s read-only -a never` and a project-root check.
 

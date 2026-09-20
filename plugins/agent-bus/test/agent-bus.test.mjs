@@ -12,14 +12,14 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(here, '..', 'bin', 'agent-bus');
 const HEAD = 'a'.repeat(40);
 
-let tmp, bus, project, calls, env, server;
+let tmp, bus, project, calls, env, server, serverB;
 
 const run = (args, { input, as = 'claude-test', extraEnv = {} } = {}) =>
   spawnSync(process.execPath, [CLI, ...args], { input, encoding: 'utf8', env: { ...env, AGENT_BUS_NAME: as, ...extraEnv } });
 const codexCalls = () => (fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 
-function serve(extra = []) {
-  const child = spawn(process.execPath, [CLI, 'serve-codex', '--cd', project, ...extra], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+function serve(extra = [], cd = project) {
+  const child = spawn(process.execPath, [CLI, 'serve-codex', '--cd', cd, ...extra], { env, stdio: ['ignore', 'ignore', 'pipe'] });
   return new Promise((resolve, reject) => {
     child.stderr.on('data', (d) => { if (String(d).includes('serving')) resolve(child); });
     child.on('exit', (code) => reject(new Error(`server exited ${code}`)));
@@ -38,9 +38,16 @@ before(async () => {
   env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, AGENT_BUS_DIR: bus, FAKE_CODEX_CALLS: calls, AGENT_BUS_DEPTH: '0' };
   delete env.AGENT_BUS_REPORT_THREAD;
   server = await serve(['--exec-timeout', '3']);
+  serverB = await serve(['--endpoint', 'codex-b', '--exec-timeout', '3']);
 });
 
-after(() => { server?.kill(); fs.rmSync(tmp, { recursive: true, force: true }); });
+after(() => { server?.kill(); serverB?.kill(); fs.rmSync(tmp, { recursive: true, force: true }); });
+
+test('the CLI starts where Node does not guess module types (Node 18 treats an extensionless file as CommonJS)', { skip: !process.allowedNodeEnvironmentFlags.has('--no-experimental-detect-module') && 'this Node has no such switch' }, () => {
+  const r = spawnSync(process.execPath, ['--no-experimental-detect-module', CLI], { encoding: 'utf8', env });
+  assert.doesNotMatch(r.stderr, /SyntaxError|Cannot use import/);
+  assert.match(r.stderr, /usage: agent-bus/);
+});
 
 test('a question goes out, is claimed with a receipt, and the reply comes back to the asker', () => {
   const sent = run(['send', 'codex-live', 'What does the healer return for a closed row?']);
@@ -108,8 +115,21 @@ test('the server runs Codex read-only in the review\'s worktree, under the polic
   assert.match(c1.prompt, /^# agent-bus policy: read-only reviewer/);
   assert.match(c1.prompt, /Review round 1 of 5\. Worktree: /);
   assert.ok(!c1.args.includes('resume'), 'the first round starts a thread');
-  assert.ok(c2.args.includes('resume') && c2.args.includes('thread-fake-1'), 'the second round of the same conversation resumes it');
+  assert.ok(c2.args.includes('resume') && c2.args.includes('thread-codex'), 'the second round resumes the thread of the thread.started EVENT, not any line that mentions thread_id');
   assert.ok(!c3.args.includes('resume'), 'another conversation does not inherit the thread');
+  // One output file per attempt: a requeued message must never be "answered" by an earlier attempt's file.
+  assert.match(c1.args[c1.args.indexOf('-o') + 1], /\/\d+-[0-9a-f]{8}\.\d+\.\d+\.out$/);
+});
+
+test('a conversation belongs to one endpoint: the same id on another endpoint starts its own thread and its own count', () => {
+  const wt = path.join(project, 'worktrees', 'one');
+  const ask = (to) => run(['ask', to, 'shared id', '--type', 'review', '--worktree', wt, '--head', HEAD, '--round', '1', '--conversation', 'shared-ticket', '--timeout', '20']);
+  assert.equal(ask('codex').status, 0);
+  assert.equal(ask('codex-b').status, 0);
+  const viaB = codexCalls().at(-1);
+  assert.ok(!viaB.args.includes('resume'), 'endpoint B must not resume the thread endpoint A started');
+  assert.equal(ask('codex-b').status, 0);
+  assert.ok(codexCalls().at(-1).args.includes('thread-codex-b'));
 });
 
 test('a worktree outside the server\'s project root is refused without running anything', () => {
@@ -128,12 +148,40 @@ test('the round limit belongs to the conversation — a round number typed by th
   const third = review(1);
   assert.equal(third.status, 4);
   assert.match(third.stderr, /round_limit/);
+  // …and the limit was fixed by the first review: asking for more rounds later does not buy them.
+  const raised = run(['ask', 'codex', 'again', '--type', 'review', '--worktree', wt, '--head', HEAD, '--round', '1', '--max-rounds', '5', '--conversation', 'ticket-limited', '--timeout', '20']);
+  assert.equal(raised.status, 4);
+  assert.match(raised.stderr, /round_limit/);
+});
+
+test('round numbers are numbers: refused when sent, and refused again by the server for a hand-made envelope', () => {
+  const wt = path.join(project, 'worktrees', 'one');
+  assert.match(run(['send', 'codex', 'x', '--type', 'review', '--worktree', wt, '--head', HEAD, '--round', 'not-a-number']).stderr, /whole number from 1 to 99/);
+  const overCap = run(['ask', 'codex', 'x', '--type', 'review', '--worktree', wt, '--head', HEAD, '--round', '1', '--max-rounds', '6', '--timeout', '20']);
+  assert.equal(overCap.status, 4);
+  assert.match(overCap.stderr, /bad_envelope.*over this server's limit of 5/);
+  const id = `${Date.now()}-deadbeef`;
+  fs.writeFileSync(path.join(bus, 'inbox', 'codex', `${id}.json`), JSON.stringify({ version: 1, id, type: 'review', from: 'claude-test', to: 'codex', text: 'x', worktree: wt, head: HEAD, round: null, max_rounds: 5 }));
+  const handMade = run(['await', id, '--timeout', '20']);
+  assert.equal(handMade.status, 4);
+  assert.match(handMade.stderr, /bad_envelope.*whole numbers/);
+});
+
+test('only a delivered review uses a round — a run that failed does not', () => {
+  const wt = path.join(project, 'worktrees', 'one');
+  const review = (body) => run(['ask', 'codex', body, '--type', 'review', '--worktree', wt, '--head', HEAD, '--round', '1', '--max-rounds', '1', '--conversation', 'ticket-one-round', '--timeout', '20']);
+  assert.match(review('PLEASE_FAIL').stderr, /exec_failed/);
+  assert.equal(review('now for real').status, 0);
+  assert.match(review('one more').stderr, /round_limit/);
 });
 
 test('a run that fails is a failure of the run (exit 4), not a short review', () => {
   const failed = run(['ask', 'codex', 'PLEASE_FAIL', '--timeout', '20']);
   assert.equal(failed.status, 4);
   assert.match(failed.stderr, /exec_failed.*codex exited 3/);
+  const silent = run(['ask', 'codex', 'PLEASE_NO_FINAL', '--timeout', '20']);      // exit 0, but nothing was said
+  assert.equal(silent.status, 4);
+  assert.match(silent.stderr, /exec_failed.*with no final message/);
   const hung = run(['ask', 'codex', 'PLEASE_HANG', '--timeout', '30']);
   assert.equal(hung.status, 4);
   assert.match(hung.stderr, /exec_timeout/);

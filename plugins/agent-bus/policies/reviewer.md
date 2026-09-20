@@ -25,5 +25,8 @@ deploy — those stay the user's decisions.
 A review has at most the stated number of rounds. After the last one, stop asking for changes:
 list what is still disputed so the author can take it to the user.
 
-**How to answer.** Your final message is delivered as the reply. Answer with it alone: do not
-call `agent-bus`, do not start a listener, do not ask the sender to confirm receipt.
+**How to answer.** When you were started by `agent-bus serve-codex` — the header of the request
+says so — your final message is delivered as the reply. Answer with it alone: do not call
+`agent-bus`, do not start a listener, do not ask the sender to confirm receipt. In a live session
+the user has explicitly asked to listen in, the transport is yours to drive, and exactly two
+commands are allowed for it: `agent-bus wait <your endpoint>` and `agent-bus reply <id>`.

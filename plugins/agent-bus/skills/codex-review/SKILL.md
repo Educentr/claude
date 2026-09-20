@@ -68,12 +68,14 @@ will see them (the ticket, the PR body) — do not drop them silently.
 **APPROVE** is the result of a review. It is **not** permission to push, merge, open a pull
 request or deploy; those remain whatever the user and the project's rules say.
 
-Exit 4 from `ask` is not a verdict — the run failed (`exec_timeout`, `bad_worktree`, …). Fix the
-cause and repeat the same round number.
+Exit 4 from `ask` is not a verdict — the run failed (`exec_timeout`, `bad_worktree`,
+`bad_envelope`, …). Fix the cause and repeat the same round number: a run that failed does not use
+up a round.
 
 ## Five rounds, then the user
 
-The limit is per conversation and the server enforces it (`round_limit`). If round 5 still ends in
+The limit is per conversation, fixed by its first request (and never above the server's own cap),
+and the server enforces it (`round_limit`). If round 5 still ends in
 REQUEST_CHANGES, stop: list the findings still disputed, each side's argument in a sentence, and
 take that to the user. Do not open a new conversation to get more rounds.
 

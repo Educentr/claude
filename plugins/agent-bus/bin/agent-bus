@@ -8,7 +8,7 @@
 //   wait  <me>                        claim the next message for <me>, print it as JSON
 //   reply <id> [text|-]               answer a message
 //   recover <me> [--requeue <id>]     list claimed-but-unanswered messages; put one back
-//   serve-codex [--endpoint codex] [--cd DIR] [--policy FILE] [--exec-timeout S]
+//   serve-codex [--endpoint codex] [--cd DIR] [--policy FILE] [--exec-timeout S] [--max-rounds N]
 //                                     answer every message for the endpoint with `codex exec`
 //   doctor                            check the mailbox, Node and the Codex CLI
 //
@@ -19,11 +19,13 @@
 //
 // The wire format, limits and the review format are specified in ../PROTOCOL.md; what a served
 // Codex may do is ../policies/reviewer.md. Both are the single source — this file enforces them.
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { randomUUID } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+// CommonJS on purpose: this file has no extension and no package.json next to it, and only newer
+// Node versions guess that such a file is an ES module.
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { randomUUID, createHash } = require('node:crypto');
+const { spawnSync } = require('node:child_process');
 
 const VERSION = 1;
 const MAX_DEPTH = 3;               // a reply to a reply to a reply — two agents cannot ping-pong forever
@@ -50,6 +52,8 @@ const flag = (name, dflt) => {
 };
 const has = (name) => { const i = argv.indexOf(`--${name}`); if (i < 0) return false; argv.splice(i, 1); return true; };
 const name = (v, what) => (NAME.test(v ?? '') ? v : die(`${what} must match ${NAME} — got ${JSON.stringify(v)}`));
+const isCount = (v) => Number.isInteger(v) && v >= 1 && v <= 99;
+const count = (v, what) => (isCount(Number(v)) ? Number(v) : die(`${what} must be a whole number from 1 to 99 — got ${JSON.stringify(v)}`));
 
 const timeoutS = Number(flag('timeout', 600));
 const from = flag('from', process.env.AGENT_BUS_NAME || 'unknown');
@@ -94,7 +98,7 @@ function envelope(to, body) {
     if (!opts.worktree || !opts.head || !opts.round) die('a review needs --worktree, --head and --round');
     if (!SHA.test(opts.head) || (opts.base && !SHA.test(opts.base))) die('--head / --base must be full 40-character commit SHAs');
     Object.assign(msg, {
-      round: Number(opts.round), max_rounds: Number(opts.maxRounds || DEFAULT_MAX_ROUNDS),
+      round: count(opts.round, '--round'), max_rounds: count(opts.maxRounds ?? DEFAULT_MAX_ROUNDS, '--max-rounds'),
       worktree: path.resolve(opts.worktree), base: opts.base ?? null, head: opts.head,
     });
   }
@@ -190,15 +194,19 @@ const pluginRoot = path.dirname(path.dirname(fs.realpathSync(process.argv[1])));
 
 function lockEndpoint(me) {
   const lock = path.join(dir('locks'), `${me}.pid`);
-  if (fs.existsSync(lock)) {
+  // Two servers on one endpoint would resume the same Codex thread concurrently. `wx` creates
+  // the file or fails — two simultaneous starts cannot both win. A lock left by a dead process
+  // is moved aside by rename (one mover wins) rather than deleted, so a lock somebody has JUST
+  // taken is never removed from under them.
+  for (let attempt = 0; ; attempt += 1) {
+    try { fs.writeFileSync(lock, String(process.pid), { flag: 'wx' }); break; } catch (e) { if (e.code !== 'EEXIST') throw e; }
     const pid = Number(fs.readFileSync(lock, 'utf8'));
     let alive = true;
     try { process.kill(pid, 0); } catch { alive = false; }
-    // Two servers on one endpoint would resume the same Codex thread concurrently.
-    if (alive) die(`endpoint "${me}" is already served by pid ${pid}`);
+    if (alive || attempt > 0) die(`endpoint "${me}" is already served by pid ${pid}`);
+    try { fs.renameSync(lock, `${lock}.stale.${process.pid}`); fs.unlinkSync(`${lock}.stale.${process.pid}`); } catch { /* another starter moved it first */ }
   }
-  fs.writeFileSync(lock, String(process.pid));
-  process.on('exit', () => { try { fs.unlinkSync(lock); } catch { /* gone */ } });
+  process.on('exit', () => { try { if (fs.readFileSync(lock, 'utf8') === String(process.pid)) fs.unlinkSync(lock); } catch { /* gone */ } });
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(130));
 }
 
@@ -213,22 +221,56 @@ function reportToChat(line) {
   if (r.status !== 0) process.stderr.write(`agent-bus: chat report failed (ignored): ${r.error ?? r.stderr}\n`);
 }
 
-function runCodex(m, cwd, policy) {
-  const convFile = path.join(dir('conversations'), `${name(m.conversation_id ?? m.id, 'conversation')}.json`);
-  const conv = fs.existsSync(convFile) ? readJson(convFile) : { thread: null, reviews: 0 };
+// What is wrong with a message that reached a server, or null. `send` checks the same things, but
+// a file in the inbox need not have come from `send`.
+function envelopeProblem(m, cap) {
+  for (const [k, v] of [['id', m.id], ['from', m.from], ['conversation_id', m.conversation_id ?? m.id]]) if (!NAME.test(v ?? '')) return `${k} is not a valid name`;
+  if (m.type !== undefined && !TYPES.includes(m.type)) return `unknown type ${JSON.stringify(m.type)}`;
+  if (typeof m.text !== 'string' || Buffer.byteLength(m.text) > MAX_REQUEST) return 'text is missing or over the limit';
   if (m.type === 'review') {
-    // The limit belongs to the conversation: a new thread, or a round number typed by the
-    // author, does not reset it.
-    const max = m.max_rounds || DEFAULT_MAX_ROUNDS;
-    if (conv.reviews >= max || m.round > max) return { ok: false, kind: 'round_limit', text: `conversation ${m.conversation_id} has used its ${max} review rounds — list what is still disputed and take it to the user` };
-    conv.reviews += 1;
+    if (typeof m.worktree !== 'string' || !SHA.test(m.head ?? '') || (m.base != null && !SHA.test(m.base))) return 'a review needs a worktree and full head / base SHAs';
+    if (!isCount(m.round) || !isCount(m.max_rounds)) return 'round and max_rounds must be whole numbers from 1 to 99';
+    if (m.max_rounds > cap) return `max_rounds ${m.max_rounds} is over this server's limit of ${cap}`;
+  }
+  return null;
+}
+
+function threadIdFrom(log) {
+  // Only the first 64 KiB are read, and only a `thread.started` EVENT counts — the trace mixes
+  // stdout with stderr, and "thread_id" can appear in either for other reasons.
+  const fd = fs.openSync(log, 'r');
+  const buf = Buffer.alloc(65536);
+  const n = fs.readSync(fd, buf, 0, buf.length, 0);
+  fs.closeSync(fd);
+  for (const line of buf.toString('utf8', 0, n).split('\n')) {
+    try { const e = JSON.parse(line); if (e.type === 'thread.started' && typeof e.thread_id === 'string') return e.thread_id; } catch { /* not an event */ }
+  }
+  return null;
+}
+
+function runCodex(m, cwd, policy, root) {
+  // A conversation belongs to ONE endpoint serving ONE project: the same id under another
+  // endpoint, or after the server was restarted for another project, is another conversation —
+  // it must not inherit the thread (its context) or share the round counter.
+  const scope = `${opts.endpoint}.${createHash('sha256').update(root).digest('hex').slice(0, 12)}`;
+  const convFile = path.join(dir('conversations', scope), `${name(m.conversation_id ?? m.id, 'conversation')}.json`);
+  const conv = fs.existsSync(convFile) ? readJson(convFile) : { thread: null, reviews: 0, max_rounds: null };
+  if (m.type === 'review') {
+    // The limit is fixed by the FIRST review of the conversation. A later message cannot raise
+    // it, and a round number typed by the author does not reset it.
+    conv.max_rounds ??= m.max_rounds;
+    if (conv.reviews >= conv.max_rounds || m.round > conv.max_rounds) return { ok: false, kind: 'round_limit', text: `conversation ${m.conversation_id} has used its ${conv.max_rounds} review rounds — list what is still disputed and take it to the user` };
   }
   const header =
     `[agent-bus] ${m.type ?? 'question'} from "${m.from}" (message ${m.id}, conversation ${m.conversation_id ?? m.id}).\n` +
-    (m.type === 'review' ? `Review round ${m.round} of ${m.max_rounds}. Worktree: ${m.worktree}\nBase: ${m.base ?? '(not given)'}\nHead: ${m.head}\n` : '') +
+    (m.type === 'review' ? `Review round ${m.round} of ${conv.max_rounds}. Worktree: ${m.worktree}\nBase: ${m.base ?? '(not given)'}\nHead: ${m.head}\n` : '') +
     `Your final message is sent back as the reply: answer with it alone. Do not call agent-bus yourself and do not start a listener.\n\n`;
-  const out = path.join(dir('tmp'), `${m.id}.out`);
-  const log = path.join(dir('logs'), `${m.id}.jsonl`);
+  // One output file per ATTEMPT. A message that is requeued after a crash runs again under the
+  // same id: with a shared path, an attempt that ends without a final message would be "answered"
+  // by the previous attempt's file.
+  const attempt = `${m.id}.${Date.now()}.${process.pid}`;
+  const out = path.join(dir('tmp'), `${attempt}.out`);
+  const log = path.join(dir('logs'), `${attempt}.jsonl`);
   const logFd = fs.openSync(log, 'w');
   const global = ['-C', cwd, '-s', 'read-only', '-a', 'never'];
   const common = ['--skip-git-repo-check', '--json', '-o', out];
@@ -239,16 +281,17 @@ function runCodex(m, cwd, policy) {
     env: { ...process.env, AGENT_BUS_NAME: opts.endpoint, AGENT_BUS_DEPTH: String((m.depth || 0) + 1) },
   });
   fs.closeSync(logFd);
-  if (!conv.thread) {
-    const started = fs.readFileSync(log, 'utf8').slice(0, 65536).match(/"thread_id"\s*:\s*"([^"]+)"/);
-    if (started) conv.thread = started[1];
-  }
-  atomic(convFile, JSON.stringify(conv));
-  if (r.error?.code === 'ETIMEDOUT') return { ok: false, kind: 'exec_timeout', text: `codex did not finish in ${opts.execTimeout}s; trace: ${log}` };
+  conv.thread ??= threadIdFrom(log);          // kept after a failure too: the next attempt continues the same context
   const answer = fs.existsSync(out) ? fs.readFileSync(out, 'utf8').trim() : '';
+  let result;
+  if (r.error?.code === 'ETIMEDOUT') result = { ok: false, kind: 'exec_timeout', text: `codex did not finish in ${opts.execTimeout}s; trace: ${log}` };
   // A non-zero exit with an output file is a broken run, not a review that happens to be short.
-  if (r.error || r.status !== 0 || !answer) return { ok: false, kind: 'exec_failed', text: `codex exited ${r.status ?? r.error?.code}${answer ? '' : ' with no final message'}; trace: ${log}` };
-  return { ok: true, kind: 'reply', text: answer };
+  else if (r.error || r.status !== 0 || !answer) result = { ok: false, kind: 'exec_failed', text: `codex exited ${r.status ?? r.error?.code}${answer ? '' : ' with no final message'}; trace: ${log}` };
+  else result = { ok: true, kind: 'reply', text: answer };
+  // Only a review that was actually delivered uses a round: five login failures are not five reviews.
+  if (m.type === 'review' && result.ok) conv.reviews += 1;
+  atomic(convFile, JSON.stringify(conv));
+  return result;
 }
 
 function serveCodex() {
@@ -258,12 +301,19 @@ function serveCodex() {
   // The policy is chosen by whoever starts the server. A message cannot name another one.
   if (!fs.existsSync(policyFile)) die(`policy file ${policyFile} not found — pass --policy FILE (the plugin ships policies/reviewer.md)`);
   const policy = fs.readFileSync(policyFile, 'utf8').trim();
+  const cap = count(opts.maxRounds ?? DEFAULT_MAX_ROUNDS, '--max-rounds');   // here: the most any conversation may ask for
   lockEndpoint(me);
   process.stderr.write(`agent-bus: serving "${me}" from ${BUS}; project root ${root}; policy ${policyFile}\n`);
   for (;;) {
     const m = claim(me, true);
     if (m.type === 'status' || m.expects_reply === false || /^\[agent-bus:ack\]/.test(m.text ?? '')) continue;   // information only: no run, no reply
     let cwd = root;
+    const problem = envelopeProblem(m, cap);
+    if (problem) {
+      process.stderr.write(`agent-bus: refused a message: ${problem}\n`);
+      if (NAME.test(m.id ?? '')) reply(m.id, problem, false, 'bad_envelope');
+      continue;
+    }
     let result;
     if (m.type === 'review') {
       let wt = null;
@@ -274,7 +324,7 @@ function serveCodex() {
     }
     process.stderr.write(`agent-bus: ${m.id} ${m.type ?? 'question'} from ${m.from}\n`);
     reportToChat(`Took ${m.type ?? 'question'} ${m.id} from ${m.from}.`);
-    result ??= runCodex(m, cwd, policy);
+    result ??= runCodex(m, cwd, policy, root);
     reply(m.id, result.text, result.ok, result.kind);
     reportToChat(`${result.ok ? 'Answered' : `Failed (${result.kind})`} ${m.id} from ${m.from}.`);
     process.stderr.write(`agent-bus: ${m.id} → ${result.kind}\n`);

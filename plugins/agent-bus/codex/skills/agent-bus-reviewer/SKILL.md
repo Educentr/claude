@@ -11,7 +11,8 @@ description: >-
 Two documents are the contract; this skill only tells you where you stand in it.
 
 - `../../../policies/reviewer.md` — what you may and may not do. It is prepended to every
-  headless run; in a live session read it once and follow it the same way.
+  headless run; in a live session read it once and follow it the same way (its last paragraph
+  says which two transport commands a live session may use).
 - `../../../PROTOCOL.md` — the envelope, the message types, the limits and the review format
   (`VERDICT:` / `REVIEWED_HEAD:` / BLOCKING / NON-BLOCKING / CHECKED).
 
