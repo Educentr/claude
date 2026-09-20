@@ -16,6 +16,7 @@ let tmp, bus, project, calls, queued, codexHome, env, server, serverB;
 
 const run = (args, { input, as = 'claude-test', extraEnv = {} } = {}) =>
   spawnSync(process.execPath, [CLI, ...args], { input, encoding: 'utf8', env: { ...env, AGENT_BUS_NAME: as, ...extraEnv } });
+const ls = (...p) => { try { return fs.readdirSync(path.join(bus, ...p)); } catch { return []; } };
 const queuedMessages = () => (fs.existsSync(queued) ? fs.readFileSync(queued, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 const codexCalls = () => (fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 
@@ -461,7 +462,7 @@ test('connect finds the Codex chat open for this project and the handshake lands
   // Queued into the chat = delivered: it is not left in the inbox for something else to claim,
   // and the sender is told who took it.
   const id = r.stdout.match(/Handshake sent as (\S+)/)[1];
-  assert.deepEqual(fs.readdirSync(path.join(bus, 'inbox', 'codex-chat')), []);
+  assert.deepEqual(ls('inbox', 'codex-chat'), [], 'a chat message never passes through the inbox');
   assert.ok(fs.existsSync(path.join(bus, 'claimed', 'codex-chat', `${id}.json`)));
   assert.match(run(['acked', id, '--timeout', '5']).stdout, /queued into Codex chat chat-for-project/);
 
@@ -477,15 +478,17 @@ test('a message to a chat that is gone is withdrawn, not left for whatever claim
   assert.equal(run(['connect', 'codex-gone', '--cd', project]).status, 0);
   await close(chat);                                     // the user closed the chat
   fs.writeFileSync(path.join(codexHome, 'sessions', '2026', '09', '21', 'rollout-chat-that-closes.jsonl'), fs.readFileSync(chat.file));   // its file stays behind
+  const held = ls('claimed', 'codex-gone').length;          // the handshake of the connect above
   const r = run(['send', 'codex-gone', 'anybody there?']);
   assert.equal(r.status, 6);
   assert.match(r.stderr, /not delivered to "codex-gone".*agent-bus connect codex-gone/s);
-  assert.deepEqual(fs.readdirSync(path.join(bus, 'inbox', 'codex-gone')), [], 'nothing is left queued for a chat nobody reads');
-  // Connecting again says what to do instead of silently picking some other chat.
+  assert.deepEqual(ls('inbox', 'codex-gone'), [], 'nothing is left queued for a chat nobody reads');
+  assert.equal(ls('claimed', 'codex-gone').length, held, 'and nothing half-delivered either');
+  // Connecting again forgets the closed chat and falls back to a background Codex.
   const again = run(['connect', 'codex-gone', '--cd', project]);
-  assert.equal(again.status, 1);
-  assert.match(again.stderr, /no Codex chat is open for .*--headless/s);
-  assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-gone.json')), 'and the stale peer is forgotten');
+  assert.equal(again.status, 0, again.stderr);
+  assert.match(again.stdout, /connected "codex-gone": a background Codex/);
+  run(['disconnect', 'codex-gone']);
 });
 
 test('a chat that cannot be reached at all leaves no peer behind', chatTests, async () => {
@@ -496,16 +499,22 @@ test('a chat that cannot be reached at all leaves no peer behind', chatTests, as
   await close(chat);
 });
 
-test('with no chat open the user is offered the background Codex, and --headless starts one that answers', chatTests, () => {
-  assert.match(run(['connect', 'codex-bg', '--cd', project]).stderr, /no Codex chat is open/);
-  const r = run(['connect', 'codex-bg', '--cd', project, '--headless']);
+test('no chat open: a background Codex is started and answers — and a listener that fails to start leaves no peer behind', chatTests, () => {
+  const r = run(['connect', 'codex-bg', '--cd', project]);         // no --headless: it is the fallback, not a mode to ask for
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /connected "codex-bg": a background Codex, read-only/);
+  assert.match(r.stdout, /connected "codex-bg": a background Codex \(pid \d+\), read-only/);
   try {
     assert.match(run(['ask', 'codex-bg', 'are you there?', '--timeout', '30']).stdout, /VERDICT: APPROVE/);
-    assert.match(run(['connect', 'codex-bg', '--cd', project]).stdout, /already connected \(background Codex\)/);
+    assert.match(run(['connect', 'codex-bg', '--cd', project]).stdout, /already connected \(background Codex/);
   } finally { assert.match(run(['disconnect', 'codex-bg']).stdout, /stopped the server of "codex-bg"/); }
   assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-bg.json')));
+
+  // A listener that refuses to start is not a connection: a peer written anyway would make every
+  // later connect answer "already connected" while nothing reads the inbox.
+  const broken = run(['connect', 'codex-broken-bg', '--cd', project, '--max-runs', '0']);
+  assert.equal(broken.status, 1);
+  assert.match(broken.stderr, /did not start[\s\S]*--max-runs/);
+  assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-broken-bg.json')));
 });
 
 test('a conversation has a budget of runs, failed ones included — not only of review rounds', async () => {
@@ -544,4 +553,90 @@ test('install replaces the 1.x reviewer skill link and lets a Codex chat write b
   assert.match(told.stdout, new RegExp(`already configures sandbox_workspace_write[\\s\\S]*${bus}`));
   assert.equal(fs.readFileSync(config, 'utf8'), '[sandbox_workspace_write]\nwritable_roots = ["/somewhere/else"]\n');
   install('--uninstall');
+});
+
+test('two chats for one project are never picked between: the user names the one they mean', chatTests, async () => {
+  const a = fakeChat({ thread: 'chat-twin-a', cwd: project });
+  const b = fakeChat({ thread: 'chat-twin-b', cwd: project });
+  const ambiguous = run(['connect', 'codex-twin', '--cd', project]);
+  assert.equal(ambiguous.status, 1);
+  assert.match(ambiguous.stderr, /2 Codex chats are open for [\s\S]*chat-twin-a[\s\S]*chat-twin-b/);
+  assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-twin.json')));
+  assert.equal(run(['connect', 'codex-twin', '--cd', project, '--thread', 'chat-twin-b']).status, 0);
+  // A second pair may share that chat — but it is said out loud, not discovered later.
+  assert.match(run(['connect', 'codex-twin-2', '--cd', project, '--thread', 'chat-twin-b']).stdout, /NOTE: peer "codex-twin" already talks to this chat/);
+  run(['disconnect', 'codex-twin']); run(['disconnect', 'codex-twin-2']);
+  await close(a); await close(b);
+});
+
+test('one endpoint, one answering side: a chat and a background listener never share a name', chatTests, async () => {
+  const chat = fakeChat({ thread: 'chat-exclusive', cwd: project });
+  // A listener is already serving that name — 1.x left one running, say.
+  const server = await serve(['--endpoint', 'codex-shared', '--exec-timeout', '3']);
+  try {
+    const refused = run(['connect', 'codex-shared', '--cd', project, '--thread', 'chat-exclusive']);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /served by a background Codex \(pid \d+\)[\s\S]*connect codex-shared-2/);
+    assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-shared.json')));
+  } finally { await stop(server); }
+  // …and the other way round: a listener refuses to serve an endpoint a chat answers for.
+  assert.equal(run(['connect', 'codex-exclusive', '--cd', project, '--thread', 'chat-exclusive']).status, 0);
+  const late = run(['serve-codex', '--cd', project, '--endpoint', 'codex-exclusive']);
+  assert.equal(late.status, 1);
+  assert.match(late.stderr, /connected to Codex chat chat-exclusive — a listener would answer the same messages/);
+  // A message for a chat is never visible to a poller, so the two can never both run it.
+  const id = run(['send', 'codex-exclusive', 'only the chat sees this']).stdout.trim();
+  assert.deepEqual(ls('inbox', 'codex-exclusive'), []);
+  assert.ok(fs.existsSync(path.join(bus, 'claimed', 'codex-exclusive', `${id}.json`)));
+  run(['disconnect', 'codex-exclusive']);
+  await close(chat);
+});
+
+test('a name already connected elsewhere is never quietly reused for another project or another chat', chatTests, async () => {
+  fs.mkdirSync(path.join(tmp, 'other-project'), { recursive: true });
+  const here = fakeChat({ thread: 'chat-here', cwd: project });
+  const there = fakeChat({ thread: 'chat-there', cwd: fs.realpathSync(path.join(tmp, 'other-project')) });
+  assert.equal(run(['connect', 'codex-pair', '--cd', project]).status, 0);
+  for (const [args, expected] of [
+    [['connect', 'codex-pair', '--cd', fs.realpathSync(path.join(tmp, 'other-project'))], /already connected for [\s\S]*project-/],
+    [['connect', 'codex-pair', '--cd', project, '--thread', 'chat-there'], /already connected to Codex chat chat-here, not chat-there/],
+  ]) {
+    const r = run(args);
+    assert.equal(r.status, 1, args.join(' '));
+    assert.match(r.stderr, expected);
+    assert.match(r.stderr, /agent-bus connect codex-pair-2/, 'and it says how to have both at once');
+  }
+  assert.equal(JSON.parse(fs.readFileSync(path.join(bus, 'peers', 'codex-pair.json'), 'utf8')).thread, 'chat-here');
+  run(['disconnect', 'codex-pair']);
+  await close(here); await close(there);
+});
+
+test('several pairs run at once, each with its own endpoints, and nothing crosses between them', chatTests, async () => {
+  fs.mkdirSync(path.join(tmp, 'project-two'), { recursive: true });
+  const root2 = fs.realpathSync(path.join(tmp, 'project-two'));
+  const one = fakeChat({ thread: 'chat-pair-one', cwd: project });
+  const two = fakeChat({ thread: 'chat-pair-two', cwd: root2 });
+  assert.equal(run(['connect', 'codex-one', '--cd', project], { as: 'claude-one' }).status, 0);
+  assert.equal(run(['connect', 'codex-two', '--cd', root2], { as: 'claude-two' }).status, 0);
+  // A third pair with no chat of its own: the background Codex, at the same time as the two chats.
+  assert.equal(run(['connect', 'codex-three', '--cd', project, '--headless'], { as: 'claude-three' }).status, 0);
+  try {
+    const sendOne = run(['send', 'codex-one', 'for pair one'], { as: 'claude-one' });
+    const sendTwo = run(['send', 'codex-two', 'for pair two'], { as: 'claude-two' });
+    assert.equal(sendOne.status, 0, sendOne.stderr);
+    assert.equal(sendTwo.status, 0, sendTwo.stderr);
+    const [a, b] = [sendOne.stdout.trim(), sendTwo.stdout.trim()];
+    assert.match(run(['ask', 'codex-three', 'for pair three', '--timeout', '30'], { as: 'claude-three' }).stdout, /VERDICT: APPROVE/);
+    const queuedNow = queuedMessages();
+    assert.equal(queuedNow.find((q) => q.message.includes(a)).thread, 'chat-pair-one');
+    assert.equal(queuedNow.find((q) => q.message.includes(b)).thread, 'chat-pair-two');
+    // Each pair answers its own message; the replies go back to the right asker.
+    run(['reply', a, 'one here'], { as: 'codex-one' });
+    run(['reply', b, 'two here'], { as: 'codex-two' });
+    assert.equal(run(['await', a, '--timeout', '5'], { as: 'claude-one' }).stdout, 'one here\n');
+    assert.equal(run(['await', b, '--timeout', '5'], { as: 'claude-two' }).stdout, 'two here\n');
+  } finally {
+    run(['disconnect', 'codex-one']); run(['disconnect', 'codex-two']); run(['disconnect', 'codex-three']);
+  }
+  await close(one); await close(two);
 });

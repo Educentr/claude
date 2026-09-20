@@ -33,6 +33,27 @@ A chat answers with the ordinary `agent-bus reply <id> -`, which writes into the
 runs under `workspace-write`, so the mailbox has to be a writable root for it:
 `agent-bus install --codex-config` adds it once.
 
+**One endpoint has one answering side.** A message for a chat is written straight to `claimed/`
+and never appears in `inbox/`: a listener polling the same endpoint would take it from there and
+run it too, and the request would be answered twice by two agents. On top of that, `connect`
+refuses a name a listener already serves, and `serve-codex` refuses a name a chat answers for.
+
+## How many pairs at once
+
+As many as you give names to. A pair is a peer name (`codex`, `codex-onei-53`, …) plus the
+endpoint the other side answers to; everything the transport keeps — inbox, claims, locks, peers,
+conversations, Codex threads — is per endpoint, so pairs never see each other's messages.
+
+What actually limits it:
+
+| | limit |
+|---|---|
+| names | one answering side per name. `connect` refuses a name connected for another project or another chat and prints the name to use instead (`<peer>-2`) |
+| chats | one chat is one Codex session; `connect` takes the chat of **this** project, refuses to choose when there are two, and says so when a chat already serves another peer (it may, and then it receives from both) |
+| background Codex | one listener per endpoint (the lock), each running one `codex exec` at a time. N listeners = N models running = N times the spend |
+| the machine | every background run is a Codex process of its own; the mailbox itself costs nothing |
+| isolation | all pairs share one mailbox directory. For pairs that must not see each other's files at all, give each its own `$AGENT_BUS_DIR` |
+
 ```
 inbox/<endpoint>/<id>.json      queued for an endpoint
 claimed/<endpoint>/<id>.json    taken by that endpoint (moved by rename — one taker wins)
@@ -125,8 +146,10 @@ come back with a counter-proposal, and either side may send either.
 A peer that declines a role ("I only read here; I can check your diff instead") has **answered** —
 `ok: true`. Turning a refusal into a failure would only make the asker repeat it.
 
-`send` exits **6** when the peer is a chat that is no longer open — nothing was queued and nothing
-is left behind; `connect` again.
+`send` exits **6** when the peer is a chat and the message did not get in: the chat is closed, or
+`codex queue` failed. Nothing was queued and nothing is left behind, so `connect` again. The one
+exception is a queue that **timed out** — it may have been written after all, so the message stays
+in `claimed/` (where `recover` lists it) and the text says to look at the chat before resending.
 
 Waiting is separate from running. `ask` / `await` exit **2** when the wait (`--timeout`, default
 600 s) ends first: the request is still queued or running. **Continue with `agent-bus await <id>`;

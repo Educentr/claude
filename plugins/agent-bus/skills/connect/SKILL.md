@@ -4,17 +4,23 @@ description: >-
   Open the agent-bus channel to Codex for this project, close it, or show its state. Run by the
   user as /agent-bus:connect, /agent-bus:connect disconnect or /agent-bus:connect status.
 disable-model-invocation: true
-argument-hint: "[disconnect|status] [--headless] [--peer NAME] [project-dir]"
+argument-hint: "[disconnect|status] [peer-name] [--headless] [project-dir]"
 allowed-tools: Bash(agent-bus *) Bash(git rev-parse *)
 ---
 
 # /agent-bus:connect
 
 Connects you to the **Codex the user already has open** for this project: messages are queued
-into that chat, the user sees both sides and can answer or take over. Only when no Codex chat is
-open does a background Codex come into it — and starting one agent from another is the user's
-decision, which is what invoking this command is. Never open a channel on your own initiative;
-outside this command, give the user the command line instead.
+into that chat, the user sees both sides and can answer or take over. When no Codex chat is open,
+a background one is started instead — read-only, answering by itself. Starting another agent is
+the user's decision, which is what invoking this command is: never open a channel on your own
+initiative; outside this command, give the user the command line instead.
+
+**Several pairs may run at once**, one per peer name: `codex` for the first, `codex-<label>` for
+the next (and each Claude session keeps its own `AGENT_BUS_NAME=claude-<label>`). One name has one
+answering side — connecting a name that is already connected for another project, another chat, or
+that a background listener serves, is refused with the name to use instead. Take that suggestion
+rather than disconnecting someone else's pair.
 
 Arguments: `$ARGUMENTS`
 
@@ -25,18 +31,18 @@ Arguments: `$ARGUMENTS`
 2. The project root: the directory from the arguments, else `git rev-parse --show-toplevel`, else
    the current directory.
 3. ```bash
-   agent-bus connect codex --cd "<root>"          # plus --headless, or --peer NAME as the endpoint
+   agent-bus connect <peer> --cd "<root>"         # <peer> is `codex` unless the user named one
    ```
    - **A chat was found** — it prints the thread and the id of the handshake message it queued
      there. Wait for it in the background (`agent-bus await <id> --timeout 600`, `run_in_background`)
      and report the answer. An answer proves both directions; a denied mailbox write is what the
      reply will say, and `agent-bus install --codex-config` is the fix (Codex must then be
      restarted).
-   - **No chat is open** — the command says so and offers `--headless`. **Ask** the user: start a
-     Codex in the background (read-only, nobody watching), or open Codex themselves and connect
-     again. Do not pass `--headless` unless they chose it.
-   - **Several chats, none for this project** — it lists them; ask which, then
-     `--thread <id>`.
+   - **No chat was open** — it starts a background Codex and says so. Tell the user plainly that
+     nobody is watching that one, and that opening Codex themselves gives them the visible channel.
+     `--headless` forces this even when a chat is open; pass it only if they asked.
+   - **It stopped with a question** — two chats for this project, a `--thread` that is not open, the
+     name taken by another pair, or `lsof` missing. Put the choice to the user; do not guess.
 4. Report: the peer name, which chat (or that it is a background one), the project root, and how
    to close it.
 

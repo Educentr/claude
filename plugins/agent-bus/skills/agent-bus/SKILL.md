@@ -27,7 +27,9 @@ an answer, not a failure.
    already connected.
 2. Pick **your own endpoint** for this session and export it in every command:
    `AGENT_BUS_NAME=claude-<label>` (a ticket id, a worktree name). A shared `claude` endpoint lets
-   a parallel session take your messages.
+   a parallel session take your messages. Several pairs may run side by side: your peer is the one
+   `doctor` lists for **this** project (`codex`, `codex-<label>`), and messages for another pair
+   are none of your business.
 3. The channel must be open: `agent-bus doctor` lists the peer, or the user runs
    `/agent-bus:connect`. **You cannot open it yourself** — it either queues into the chat the user
    is sitting in or starts another agent, and both are theirs to decide. If there is no peer, say
