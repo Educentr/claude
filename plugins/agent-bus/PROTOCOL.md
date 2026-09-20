@@ -40,7 +40,12 @@ runs under `workspace-write`, so the mailbox has to be a writable root for it:
 **One endpoint has one answering side.** A message for a chat is written straight to `claimed/`
 and never appears in `inbox/`: a listener polling the same endpoint would take it from there and
 run it too, and the request would be answered twice by two agents. On top of that, `connect`
-refuses a name a listener already serves, and `serve-codex` refuses a name a chat answers for.
+refuses a name a listener already serves, `serve-codex` refuses a name a chat answers for, and
+both register through one lock per endpoint, so two of them at once cannot each find it free.
+
+That covers the two that register. A bare `agent-bus wait <endpoint>` registers nothing and takes
+whatever is in that inbox — it is how a session receives, and it is the caller's business not to
+point two of them at one name.
 
 ## How many pairs at once
 

@@ -261,7 +261,7 @@ const peerFile = (to) => path.join(dir('peers'), `${name(to, 'peer')}.json`);
 // conversation. A listener started BY a connect inherits the held mutex through the environment,
 // or the parent would wait for a lock the child cannot take.
 let holding = null;                // the endpoint whose registration THIS process is holding
-function registering(me, fn) {
+async function registering(me, fn) {
   // Spent the moment it is used, so it is never inherited twice — not by a further agent-bus
   // called from the listener, and not by the `codex exec` runs that inherit its environment.
   if (process.env.AGENT_BUS_REG_HELD === me) { delete process.env.AGENT_BUS_REG_HELD; return fn(); }
@@ -276,7 +276,7 @@ function registering(me, fn) {
   const clean = () => { if (released) return; released = true; try { fs.rmdirSync(busy); } catch { /* gone */ } };
   process.on('exit', clean);
   holding = me;
-  try { return fn(); } finally { clean(); process.off('exit', clean); holding = null; }
+  try { return await fn(); } finally { clean(); process.off('exit', clean); holding = null; }
 }
 
 function liveRecord(to) {
@@ -397,17 +397,17 @@ function deliverToChat(msg, live) {
 // there is none — a background Codex, which is what the user asked for by running this. The
 // handshake is an ordinary message, so what it proves is the whole path, not a special case of it.
 // Several pairs can run at once; each gets its own peer name (its own endpoint).
-function connect(to) {
+async function connect(to) {
   name(to, 'peer');
   const root = fs.realpathSync(opts.cd);
   // Chosen before the mutex: finding the chats can take a moment and can stop with a question,
   // and neither should hold the endpoint against another session.
   const chat = opts.headless ? null : chooseChat(to, root);
-  const done = registering(to, () => register(to, root, chat));
+  const done = await registering(to, () => register(to, root, chat));
   if (done) console.log(done);
 }
 
-function register(to, root, chat) {
+async function register(to, root, chat) {
   const existing = usablePeer(to, root);
   if (existing) return `"${to}" is already connected (${existing.kind === 'chat' ? `Codex chat ${existing.thread}` : 'background Codex'}, ${existing.cwd}); say what you want to ask, or: agent-bus disconnect ${to}`;
   // One consumer per endpoint, whatever kind it is: a chat and a listener on the same name would
@@ -421,7 +421,7 @@ function register(to, root, chat) {
     // after the listener has taken the endpoint — a record with nothing behind it would make
     // every later connect answer "already connected".
     const args = ['serve-codex', '--endpoint', to, '--cd', root, '--exec-timeout', String(opts.execTimeout), '--max-rounds', String(opts.maxRounds ?? DEFAULT_MAX_ROUNDS), '--max-runs', String(opts.maxRuns ?? DEFAULT_MAX_RUNS), ...(opts.policy ? ['--policy', path.resolve(opts.policy)] : [])];
-    const { pid, log } = serveDetached(to, args);
+    const { pid, log } = await serveDetached(to, args);
     atomic(peerFile(to), JSON.stringify({ kind: 'headless', cwd: root, pid, since: new Date().toISOString() }));
     return `connected "${to}": a background Codex (pid ${pid}), read-only under ${root}; log ${log}.\nNobody is watching it — ask it to report what matters back to you. Close it with: agent-bus disconnect ${to}`;
   }
@@ -489,14 +489,17 @@ function chats() {
   for (const [to, rec] of peers.filter(([, r]) => r.kind === 'chat' && open.some((c) => c.thread === r.thread))) console.log(`  peer "${to}" talks to ${rec.thread}`);
 }
 
-const disconnect = (to) => registering(to, () => unregister(to));
+// The record goes inside the registration; stopping the listener waits for a request in flight to
+// finish, which can take minutes, and nothing about that needs the endpoint held.
+const disconnect = async (to) => { const then = await registering(to, () => unregister(to)); if (then) then(); };
 
 function unregister(to) {
   const rec = fs.existsSync(peerFile(to)) ? readJson(peerFile(to)) : null;
   if (!rec) return console.log(`"${to}" is not connected`);
   fs.unlinkSync(peerFile(to));
-  if (rec.kind === 'headless') return stop(to);
+  if (rec.kind === 'headless') return () => stop(to);
   console.log(`disconnected "${to}" — the Codex chat itself is untouched; anything already queued into it stays there`);
+  return null;
 }
 
 // ---- serving a Codex in the background ---------------------------------------------------------
@@ -700,7 +703,7 @@ function runCodex(m, cwd, policy, root, cap, runCap) {
 
 // Starts this same command again as a process of its own and returns once it holds the endpoint:
 // the listener then outlives the terminal (or the agent session) that started it.
-function serveDetached(endpoint, extra) {
+async function serveDetached(endpoint, extra) {
   const me = name(endpoint ?? opts.endpoint, '--endpoint');
   const log = path.join(mailbox(), `serve-${me}.log`);
   const fd = fs.openSync(log, 'a');
@@ -712,13 +715,28 @@ function serveDetached(endpoint, extra) {
   const child = spawn(process.execPath, [fs.realpathSync(process.argv[1]), ...args], { detached: true, stdio: ['ignore', fd, fd], cwd: process.cwd(), env: holding === me ? { ...process.env, AGENT_BUS_REG_HELD: me } : { ...process.env, AGENT_BUS_REG_HELD: '' } });
   child.unref();
   const lock = lockFile(me);
-  // Waited for synchronously: the caller (connect) must not record a peer for a listener that
-  // never came up, and a callback would let it carry on regardless.
-  for (const end = Date.now() + 10000; Date.now() < end; sleep(100)) {
-    if (fs.existsSync(lock) && readLock(me)?.pid === child.pid) return { pid: child.pid, log };
-    if (child.exitCode !== null || child.signalCode !== null) break;
+  const took = () => { try { return fs.existsSync(lock) && readLock(me)?.pid === child.pid; } catch { return false; } };
+  // Waited for on the event loop, not in a blocking sleep. The caller must not record a peer for
+  // a listener that never came up — and this is OUR child, so Node's own report of its exit is
+  // the witness, one that needs no `ps` (which may be slow, absent, or lying). A blocked loop
+  // would never receive that report: the child would still look alive after it was killed.
+  const ended = () => child.exitCode !== null || child.signalCode !== null;
+  const tick = () => new Promise((r) => setTimeout(r, 100));
+  for (const end = Date.now() + 10000; Date.now() < end; await tick()) {
+    if (took()) return { pid: child.pid, log };
+    if (ended()) break;
   }
-  die(`the server for "${me}" did not start — see ${log}:\n${fs.readFileSync(log, 'utf8').trim().split('\n').slice(-3).join('\n')}`);
+  // Late is not dead: a child still on its way to the lock would take the endpoint after this
+  // process released the registration — beside whoever registered in the meantime. So it is
+  // stopped first, and the registration is let go only once it provably cannot act.
+  if (!ended()) {
+    try { process.kill(child.pid, 'SIGKILL'); } catch { /* already gone */ }
+    for (const end = Date.now() + 5000; !ended() && Date.now() < end; await tick());
+  }
+  const tail = fs.readFileSync(log, 'utf8').trim().split('\n').slice(-3).join('\n');
+  if (!ended()) die(`the server for "${me}" neither started nor stopped when told to (pid ${child.pid}) — nothing was recorded. Look at it (ps -p ${child.pid}) before connecting that endpoint again; log ${log}:\n${tail}`);
+  if (took()) fs.unlinkSync(lock);      // it reached the lock as it was being killed
+  die(`the server for "${me}" did not start — see ${log}:\n${tail}`);
 }
 
 function stop(me) {
@@ -850,7 +868,7 @@ async function serveCodex() {
   const cap = count(opts.maxRounds ?? DEFAULT_MAX_ROUNDS, '--max-rounds');   // here: the most any conversation may ask for
   const runCap = Number(opts.maxRuns ?? DEFAULT_MAX_RUNS);
   if (!Number.isInteger(runCap) || runCap < 1) die('--max-runs must be a whole number of 1 or more');
-  lockEndpoint(me);
+  await lockEndpoint(me);
   process.stderr.write(`agent-bus: serving "${me}" from ${BUS}; project root ${root}; policy ${policyFile}\n`);
   for (;;) {
     // Polled from the event loop, not in a blocking sleep: a process that never yields never
@@ -910,6 +928,8 @@ function doctor() {
   }
 }
 
+const fatal = (e) => die(e.stack ?? String(e));
+
 switch (cmd) {
   case 'send': console.log(send(a ?? die('usage: send <to> [text|-]'), text(rest))); break;
   case 'ask': {
@@ -930,14 +950,15 @@ switch (cmd) {
   case 'recover': recover(a ?? die('usage: recover <me> [--requeue <id>]')); break;
   case 'unlock': unlock(a ?? die('usage: unlock <endpoint>')); break;
   case 'serve-codex': {
-    if (!opts.detach) { serveCodex().catch((e) => die(e.stack ?? String(e))); break; }
-    const { pid, log } = serveDetached();
-    console.log(`serving "${opts.endpoint}" as pid ${pid}; log ${log}; stop with: agent-bus stop ${opts.endpoint}`);
+    if (!opts.detach) { serveCodex().catch(fatal); break; }
+    serveDetached()
+      .then(({ pid, log }) => console.log(`serving "${opts.endpoint}" as pid ${pid}; log ${log}; stop with: agent-bus stop ${opts.endpoint}`))
+      .catch(fatal);
     break;
   }
   case 'chats': chats(); break;
-  case 'connect': connect(a ?? 'codex'); break;
-  case 'disconnect': disconnect(name(a ?? 'codex', 'peer')); break;
+  case 'connect': connect(a ?? 'codex').catch(fatal); break;
+  case 'disconnect': disconnect(name(a ?? 'codex', 'peer')).catch(fatal); break;
   case 'stop': stop(a ?? 'codex'); break;
   case 'install': install(); break;
   case 'doctor': doctor(); break;

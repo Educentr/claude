@@ -731,3 +731,20 @@ test('--thread means the same on the second call as on the first', chatTests, as
   run(['disconnect', 'codex-again']);
   await close(chat);
 });
+
+test('a listener that is late rather than dead is stopped before the registration is let go', () => {
+  // `ps` is what the child needs to write its lock; this one answers long after the parent has
+  // given up, which is exactly the child that used to take the endpoint after the fact.
+  const bin = path.join(tmp, 'slow-ps');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'ps'), '#!/bin/sh\nsleep 12\necho "Mon Sep 21 00:00:00 2026"\n', { mode: 0o755 });
+  const started = Date.now();
+  const r = run(['connect', 'codex-late', '--cd', project, '--headless', '--exec-timeout', '3'], { extraEnv: { PATH: `${bin}:${env.PATH}` } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /did not start|neither started nor stopped/);
+  assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-late.json')));
+  // Past the moment that child would have finished writing its lock.
+  while (Date.now() - started < 16000) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+  assert.ok(!fs.existsSync(path.join(bus, 'locks', 'codex-late.pid')), 'the child never takes the endpoint afterwards');
+  assert.ok(!fs.existsSync(path.join(bus, 'locks', 'codex-late.registering')), 'and the registration is not left held');
+});
