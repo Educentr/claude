@@ -6,7 +6,6 @@ description: >-
   /agent-bus:install after installing or updating the plugin.
 disable-model-invocation: true
 argument-hint: "[--link]"
-allowed-tools: Bash(node *) Bash(agent-bus *)
 ---
 
 # /agent-bus:install

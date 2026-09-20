@@ -73,6 +73,8 @@ push, merge or deploy.
   own endpoint names, and a conversation never crosses endpoints or projects.
 - **The round limit cannot be talked up.** It is fixed by a conversation's first review and capped
   by the server; only delivered reviews count against it.
+- **You can watch it.** With `AGENT_BUS_REPORT_THREAD` set, the transport reports into a Codex chat
+  what was received and what was answered — excerpts, with the path to the whole text.
 - **The policy is chosen by whoever starts the server.** No message can replace or relax it, and
   the prompt is backed by `-s read-only -a never` and a project-root check.
 

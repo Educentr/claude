@@ -4,7 +4,6 @@ description: >-
   Remove what /agent-bus:install put outside Claude Code — the CLI link, the Codex skill link and
   the installed copy. Run by the user as /agent-bus:uninstall.
 disable-model-invocation: true
-allowed-tools: Bash(node *) Bash(agent-bus *)
 ---
 
 # /agent-bus:uninstall

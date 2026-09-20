@@ -12,14 +12,14 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(here, '..', 'bin', 'agent-bus');
 const HEAD = 'a'.repeat(40);
 
-let tmp, bus, project, calls, env, server, serverB;
+let tmp, bus, project, calls, queued, env, server, serverB;
 
 const run = (args, { input, as = 'claude-test', extraEnv = {} } = {}) =>
   spawnSync(process.execPath, [CLI, ...args], { input, encoding: 'utf8', env: { ...env, AGENT_BUS_NAME: as, ...extraEnv } });
 const codexCalls = () => (fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 
-function serve(extra = [], cd = project) {
-  const child = spawn(process.execPath, [CLI, 'serve-codex', '--cd', cd, ...extra], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+function serve(extra = [], cd = project, extraEnv = {}) {
+  const child = spawn(process.execPath, [CLI, 'serve-codex', '--cd', cd, ...extra], { env: { ...env, ...extraEnv }, stdio: ['ignore', 'ignore', 'pipe'] });
   return new Promise((resolve, reject) => {
     child.stderr.on('data', (d) => { if (String(d).includes('serving')) resolve(child); });
     child.on('exit', (code) => reject(new Error(`server exited ${code}`)));
@@ -32,10 +32,11 @@ before(async () => {
   project = fs.realpathSync(fs.mkdtempSync(path.join(tmp, 'project-')));
   fs.mkdirSync(path.join(project, 'worktrees', 'one'), { recursive: true });
   calls = path.join(tmp, 'codex-calls.jsonl');
+  queued = path.join(tmp, 'codex-queue.jsonl');
   const bin = path.join(tmp, 'bin');
   fs.mkdirSync(bin);
   fs.symlinkSync(path.join(here, 'fake-codex'), path.join(bin, 'codex'));
-  env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, AGENT_BUS_DIR: bus, FAKE_CODEX_CALLS: calls, AGENT_BUS_DEPTH: '0' };
+  env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, AGENT_BUS_DIR: bus, FAKE_CODEX_CALLS: calls, FAKE_CODEX_QUEUE: queued, AGENT_BUS_DEPTH: '0' };
   delete env.AGENT_BUS_REPORT_THREAD;
   server = await serve(['--exec-timeout', '3']);
   serverB = await serve(['--endpoint', 'codex-b', '--exec-timeout', '3']);
@@ -292,12 +293,75 @@ test('serve-codex --detach returns once the endpoint is held, the server answers
   const started = run(['serve-codex', '--cd', project, '--endpoint', 'codex-detached', '--detach', '--exec-timeout', '3']);
   assert.equal(started.status, 0, started.stderr);
   const pid = Number(started.stdout.match(/as pid (\d+)/)[1]);
-  assert.equal(fs.readFileSync(path.join(bus, 'locks', 'codex-detached.pid'), 'utf8'), String(pid));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(bus, 'locks', 'codex-detached.pid'), 'utf8')).pid, pid);
   assert.equal(run(['ask', 'codex-detached', 'anyone there?', '--timeout', '20']).status, 0);
   assert.match(run(['serve-codex', '--cd', project, '--endpoint', 'codex-detached', '--detach']).stderr, /did not start[\s\S]*already served by pid/);
   assert.match(run(['stop', 'codex-detached', '--timeout', '20']).stdout, /stopped the server of "codex-detached"/);
   assert.ok(!fs.existsSync(path.join(bus, 'locks', 'codex-detached.pid')));
   assert.match(run(['stop', 'codex-detached']).stdout, /is not served/);
+});
+
+test('stop never signals a process it cannot prove is that server: an empty lock, pid 0, or a pid that is somebody else\'s now', async () => {
+  const lock = (me) => path.join(bus, 'locks', `${me}.pid`);
+  // Between creating a lock and writing it an old server left an empty file; Number('') is 0 — the caller's whole process group.
+  for (const [me, body] of [['codex-empty', ''], ['codex-zero', '0'], ['codex-init', JSON.stringify({ pid: 1, started: null })]]) {
+    fs.writeFileSync(lock(me), body);
+    const r = run(['stop', me]);
+    assert.equal(r.status, 1, me);
+    assert.match(r.stderr, /does not hold a pid — nothing was signalled/);
+  }
+  // A lock left by a crash whose pid now belongs to an unrelated, living process.
+  const bystander = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+  try {
+    fs.writeFileSync(lock('codex-reused'), String(bystander.pid));
+    const r = run(['stop', 'codex-reused']);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /not running that server any more — nothing was signalled/);
+    assert.equal(bystander.exitCode, null, 'the bystander must still be running');
+    assert.doesNotThrow(() => process.kill(bystander.pid, 0));
+    // …and a REAL server under that pid but from another launch is not "that server" either.
+    fs.writeFileSync(lock('codex-relaunched'), JSON.stringify({ pid: server.pid, started: 'Thu Jan  1 00:00:00 1970' }));
+    assert.match(run(['stop', 'codex-relaunched']).stderr, /nothing was signalled/);
+    assert.equal(server.exitCode, null);
+    assert.match(run(['unlock', 'codex-reused']).stdout, /removed the lock/);
+  } finally { bystander.kill('SIGKILL'); }
+});
+
+test('uninstall removes only the links install makes — not any link that happens to point under a wide AGENT_BUS_HOME', () => {
+  const wide = path.join(tmp, 'wide-home');                       // think AGENT_BUS_HOME=$HOME
+  const dirs = { AGENT_BUS_HOME: wide, AGENT_BUS_BIN_DIR: path.join(tmp, 'wide-bin'), AGENT_BUS_CODEX_SKILLS_DIR: path.join(tmp, 'wide-skills') };
+  fs.mkdirSync(path.join(wide, 'my-tools'), { recursive: true });
+  fs.writeFileSync(path.join(wide, 'my-tools', 'custom-bus'), '#!/bin/sh\n');
+  fs.mkdirSync(dirs.AGENT_BUS_BIN_DIR);
+  const mine = path.join(dirs.AGENT_BUS_BIN_DIR, 'agent-bus');
+  fs.symlinkSync(path.join(wide, 'my-tools', 'custom-bus'), mine);
+  run(['install', '--uninstall'], { extraEnv: dirs });
+  assert.equal(fs.readlinkSync(mine), path.join(wide, 'my-tools', 'custom-bus'), 'a link the user made stays');
+  assert.ok(fs.existsSync(path.join(wide, 'my-tools', 'custom-bus')), 'and a directory without install\'s marker is never removed');
+});
+
+test('with a report thread set, the Codex chat is told what was asked and what was answered — and a lost report loses nothing', async () => {
+  const reports = () => (fs.existsSync(queued) ? fs.readFileSync(queued, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+  const reporting = await serve(['--endpoint', 'codex-reports', '--exec-timeout', '3'], project, { AGENT_BUS_REPORT_THREAD: 'thread-chat', AGENT_BUS_REPORT_CHARS: '60' });
+  try {
+    const long = `Is the healer right to wait for a live owner? ${'context '.repeat(40)}`;
+    const before = reports().length;
+    assert.equal(run(['ask', 'codex-reports', long, '--conversation', 'ticket-reported', '--timeout', '20']).status, 0);
+    // The reply is delivered first and reported second, so the asker is back before the second report lands.
+    for (const end = Date.now() + 10000; reports().length < before + 2 && Date.now() < end;) await new Promise((r) => setTimeout(r, 100));
+    const [received, answered] = reports().slice(before);
+    assert.equal(received.thread, 'thread-chat');
+    assert.match(received.message, /^\[agent-bus:status\] Received a question from claude-test — message \S+, conversation ticket-reported\./);
+    assert.match(received.message, /not an instruction from the user/);
+    assert.match(received.message, /Is the healer right to wait for a live owner\?/);
+    assert.match(received.message, /more characters\)/, 'a long request is excerpted, never sent whole as an argument');
+    assert.match(received.message, /Whole text: .*claimed\/codex-reports\//);
+    assert.match(answered.message, /^\[agent-bus:status\] Answered message \S+ from claude-test\./);
+    assert.match(answered.message, /VERDICT: APPROVE/);
+    assert.match(answered.message, /Whole text: .*replies\//);
+  } finally { await stop(reporting); }
+  const deaf = await serve(['--endpoint', 'codex-deaf', '--exec-timeout', '3'], project, { AGENT_BUS_REPORT_THREAD: 'thread-broken' });
+  try { assert.equal(run(['ask', 'codex-deaf', 'still answered?', '--timeout', '20']).status, 0); } finally { await stop(deaf); }
 });
 
 test('recover lists what was claimed and never answered, and puts one back only when told to', () => {

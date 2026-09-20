@@ -40,7 +40,8 @@ agent-bus doctor
 Either way you get `~/.local/bin/agent-bus` and the skill `~/.agents/skills/agent-bus-reviewer`.
 
 - **From the plugin** the files are **copied** to `~/.local/share/agent-bus` and linked from there:
-  a plugin's own directory is a cache that an update may move. After a plugin update run
+  a plugin's own directory is a cache that an update may move. That directory belongs to `install`
+  as a whole — an update replaces it and `--uninstall` removes it — so keep nothing of your own in it. After a plugin update run
   `/agent-bus:install` again and restart the listener.
 - **From a clone** (`--link`) the links point straight into the clone, and `git pull` updates
   everything.
@@ -93,8 +94,15 @@ foreground group), so the run ends and the listener exits, releasing its endpoin
 to the listener alone (`kill <pid>`) is honoured **between** requests — a run in progress is not
 cancelled and finishes or hits `--exec-timeout` first.
 
-`AGENT_BUS_REPORT_THREAD=<thread id>` additionally posts a one-line "took / answered / failed"
-status into that Codex chat through `codex queue`; if that fails the reply is still delivered.
+**Seeing the exchange in a Codex chat.** Headless runs happen in threads of their own, so the
+chat you are looking at shows nothing by itself. Start the listener with
+`AGENT_BUS_REPORT_THREAD=<id or exact name of that chat's session>` and the transport queues two
+reports into it for every message (`codex queue`): what was **received** — type, sender,
+conversation, for a review the round and head, and an excerpt of the request — and what was
+**answered**, with an excerpt of the reply. Each names the file holding the whole text. Excerpts are
+`AGENT_BUS_REPORT_CHARS` long (default 2000). The reports are marked as coming from the transport,
+not from the user; a report that cannot be queued is logged and ignored — the reply is delivered
+regardless, and nothing is run twice because of it.
 
 **Live session — on request only.** Claiming a message renames a file and writes a receipt, so
 the session needs write access to the mailbox; a read-only sandbox cannot listen. And a session
@@ -132,7 +140,8 @@ time because an endpoint handles its messages one by one. For full isolation use
 | exit 4 `bad_worktree` | the worktree is not under the server's `--cd` | start the server at a common parent |
 | exit 4 `round_limit` | the conversation has used its rounds (the limit is fixed by its first review and never above the running server's `--max-rounds`; failed runs, an oversize reply included, do not count) | take the open points to the user |
 | exit 4 `bad_envelope` | not a valid message: a round that is not a number, `max_rounds` over the server's cap, a short SHA | fix the request; the text says which field |
-| `has a lock left by pid …, which is not running` | a server was killed and left its lock | make sure no server for that endpoint is starting, then `agent-bus unlock <endpoint>` — a stale lock is never taken over automatically |
+| `has a lock left by pid …, which is not running that server any more` | a server was killed and left its lock; the pid may be somebody else's by now | make sure no server for that endpoint is starting, then `agent-bus unlock <endpoint>` — a stale lock is never taken over automatically, and `stop` never signals a pid it cannot prove is that server (same command **and** same start time) |
+| `the lock … does not hold a pid` | a damaged or half-written lock file | nothing was signalled; look at the file, then `agent-bus unlock <endpoint> --force` |
 | server died mid-message | the message sits in `claimed/` with no reply | `agent-bus recover <endpoint>` lists it; `--requeue <id>` runs it **again** — a person decides |
 | chat report failed | `codex queue` unavailable | ignored by design; the reply is in the mailbox |
 

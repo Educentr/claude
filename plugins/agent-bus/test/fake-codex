@@ -4,6 +4,11 @@ const fs = require('node:fs');
 const args = process.argv.slice(2);
 if (args[0] === '--version') { console.log('codex-cli 0.0.0-fake'); process.exit(0); }
 if (args[0] === 'login') process.exit(0);
+if (args[0] === 'queue') {            // a report into a chat: recorded, and failing for one thread on purpose
+  const thread = args[args.indexOf('--thread') + 1];
+  fs.appendFileSync(process.env.FAKE_CODEX_QUEUE, JSON.stringify({ thread, message: args[args.indexOf('--message') + 1] }) + '\n');
+  process.exit(thread === 'thread-broken' ? 1 : 0);
+}
 const out = args[args.indexOf('-o') + 1];
 const prompt = fs.readFileSync(0, 'utf8');
 fs.appendFileSync(process.env.FAKE_CODEX_CALLS, JSON.stringify({ args, cwd: args[args.indexOf('-C') + 1], prompt }) + '\n');

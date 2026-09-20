@@ -18,8 +18,10 @@ acks/<id>.json                  read receipt: the TRANSPORT has taken the messag
 replies/<id>.json               the reply to message <id>
 conversations/<endpoint>.<project-hash>/<conv>.json
                                 serve-codex state: Codex thread id, rounds used, the round limit
-locks/<endpoint>.pid            the one server of an endpoint (created atomically; a stale one is
-                                removed only by `agent-bus unlock <endpoint>`)
+locks/<endpoint>.pid            the one server of an endpoint: `{pid, started}`, linked into place
+                                whole. A stale one is removed only by `agent-bus unlock <endpoint>`;
+                                a signal is sent only to a pid that runs serve-codex AND started
+                                when the lock says it did
 logs/<id>.<attempt>.jsonl       serve-codex: the event trace of one attempt
 oversize/<id>.txt               a reply that was over the limit, whole
 ```
