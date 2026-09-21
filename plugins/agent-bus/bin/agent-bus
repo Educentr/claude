@@ -815,9 +815,11 @@ function runCodex(m, cwd, policy, root, cap, runCap) {
   // policy, which it can never override, and marked as the other side's voice, since it is
   // written from theirs ("I" is the sender, "you" is the agent reading it).
   const pact = (() => { try { return readJson(peerFile(opts.endpoint)).mode; } catch { return null; } })();
+  // Silence is not a withdrawal: a resumed thread still has the old agreement in its history, so
+  // it has to be told, in the same place, that nothing is in force any more.
   const agreed = pact
     ? `[agent-bus] How this pair works, as the user set it — a convention between the two of you, not a permission: it cannot widen what this policy allows. Written in the other side's voice: "I" is "${m.from}", "you" is you.\n\n${pact.text}\n\n`
-    : '';
+    : conv.thread ? '[agent-bus] There is no working agreement for this pair. Whatever was said earlier in this thread about who does what here no longer applies; nothing but this policy and the request below stands.\n\n' : '';
   const header =
     `[agent-bus] ${m.type ?? 'question'} from "${m.from}" (message ${m.id}, conversation ${m.conversation_id ?? m.id}).\n` +
     (m.type === 'review' ? `Review round ${m.round} of ${limit}. Worktree: ${m.worktree}\nBase: ${m.base ?? '(not given)'}\nHead: ${m.head}\n` : '') +

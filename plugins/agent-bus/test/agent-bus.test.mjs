@@ -921,6 +921,7 @@ test('a background Codex is told the agreement with every request, and told agai
     assert.equal(run(['ask', 'codex-pact', 'first question', '--conversation', 'pact-talk', '--timeout', '30']).status, 0);
     const first = codexCalls().pop();
     assert.match(first.prompt, /How this pair works, as the user set it[\s\S]*You write, I review/);
+    assert.doesNotMatch(first.prompt, /There is no working agreement/);
     assert.match(first.prompt, /"I" is "claude-test", "you" is you/);
     assert.ok(first.prompt.indexOf('agent-bus policy') < first.prompt.indexOf('How this pair works'), 'the policy comes first and is never overridden by it');
     assert.ok(first.prompt.indexOf('How this pair works') < first.prompt.indexOf('first question'), 'and the request comes after');
@@ -933,7 +934,11 @@ test('a background Codex is told the agreement with every request, and told agai
 
     run(['mode', 'codex-pact', '--clear']);
     assert.equal(run(['ask', 'codex-pact', 'third question', '--conversation', 'pact-talk', '--timeout', '30']).status, 0);
-    assert.doesNotMatch(codexCalls().pop().prompt, /How this pair works/, 'and nothing is claimed once it is withdrawn');
+    const third = codexCalls().pop();
+    assert.doesNotMatch(third.prompt, /How this pair works/, 'nothing is claimed once it is withdrawn');
+    // …and saying nothing would not do: this run resumes a thread whose history still holds the
+    // old agreement, so the withdrawal has to be said.
+    assert.match(third.prompt, /There is no working agreement for this pair[\s\S]*no longer applies/);
   } finally { run(['disconnect', 'codex-pact']); }
 });
 
