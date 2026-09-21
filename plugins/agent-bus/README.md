@@ -97,6 +97,45 @@ one project: it asks which, and `--thread <id>` (the first few characters are en
 itself. Nobody watches that one, so ask it to report what matters back to you. `--headless` asks
 for it even when a chat is open.
 
+### Why a Codex you have not spoken to cannot be connected
+
+This is the one rule that surprises people, so here is the reason, measured rather than assumed.
+
+**There is nothing to deliver into.** A Codex session creates its conversation on the first turn,
+not when it opens. Until then the thread exists only as a lock file; queueing into it fails:
+
+```console
+$ codex queue --thread 01a0c2d8-0650-… --message "probe"
+Error: failed to queue session message: thread/queue/add failed: failed to read thread:
+       invalid thread-store request: no rollout found for thread id 01a0c2d8-0650-…
+```
+
+So `connect` could register the pair, and the first message would fail anyway — later, and less
+clearly.
+
+**And there would be no way to know which thread is yours.** An open session holds *two* locks:
+its own thread and its subagent's. With no rollout and no row in the thread store, nothing tells
+them apart — same names, same timestamps. A guess that went wrong would put your message in a
+thread you never look at.
+
+One line typed in that session settles both: the rollout appears (there is somewhere to put a
+message) and the store gains a row marked `user` (it is clear which of the two threads that is).
+That is why the message says to type anything, even "hi".
+
+**The alternative, if you do not want to type there: take the background session.**
+
+```bash
+agent-bus connect codex --cd <project> --headless     # or answer the offer connect prints
+```
+
+A Codex is started for that project read-only, and it answers by itself — no chat, no first turn,
+nothing to wait for. What you give up is the whole reason the live chat is the default: you do not
+see the question or the answer, you cannot step in mid-exchange, and the work only reaches you
+through what the peer chooses to report back. Ask it explicitly to report what matters. Two
+practical notes: a background listener is a process, so it can be killed with the shell that
+started it (see Known limits), and every message is a fresh `codex exec` — the pair's agreement
+travels with each one, but nothing else does.
+
 **Closing**: `/agent-bus:connect disconnect` (or `agent-bus disconnect <peer>`). A background Codex
 is stopped; a chat of yours is left alone, and so is anything already queued into it.
 
@@ -138,8 +177,12 @@ Full guide for the Codex side: [`codex/INTEGRATION.md`](codex/INTEGRATION.md).
   file (older ones); what the thread is comes from Codex's thread store. A closed session's
   rollout stays on disk and `codex queue` still accepts it, so delivery checks that first; a
   message that cannot be delivered is withdrawn (exit 6), never left for something else to claim.
-- **A Codex open but never spoken to is not "no Codex".** It has no thread to queue into, so the
-  answer is to say so — not to start a second one behind the user's back.
+- **A Codex open but never spoken to is not "no Codex".** It has no thread to queue into (the
+  conversation is created by the first turn, and `codex queue` refuses a thread without one) and
+  its two locks — its own thread and its subagent's — cannot be told apart until the store has a
+  row. So the answer is to say so, with the two ways out, rather than guess a thread or start a
+  second Codex behind the user's back. See
+  [Why a Codex you have not spoken to cannot be connected](#why-a-codex-you-have-not-spoken-to-cannot-be-connected).
 - **A failed run is not a verdict.** Timeouts, non-zero exits, a worktree outside the project and a
   spent round limit come back as failures (exit 4), not as a review.
 - **Waiting is not running.** When the wait ends first, `await` the same id — resending would run
