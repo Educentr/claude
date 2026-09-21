@@ -158,9 +158,15 @@ a `status` message when it is set. `agent-bus mode <peer> [name|--file F|--clear
 withdraws it; `connect --mode <name>` does it in the same breath as connecting. Three come with the
 plugin — `author-reviewer`, `reviewer-author`, `discuss` — and any text will do.
 
+A chat reads it as the message it arrives in. A background run has no such memory — every message
+is a fresh `codex exec`, and a resumed thread may predate the agreement or outlive its change — so
+the current text travels with **every** headless request, after the policy and marked as the other
+side's voice. The agreement lasts as long as the peer: `disconnect` takes it with it, because the
+next `connect` may reach another session or another project.
+
 The transport enforces none of it. It settles what the two agents do by agreement, never what they
 are allowed to do: that comes from the user, through the policy a listener was started with and
-through the permissions of the session at the other end.
+through the permissions of the session at the other end. The policy always wins.
 
 `expects_reply: false` (`--no-reply`) makes any message information only.
 

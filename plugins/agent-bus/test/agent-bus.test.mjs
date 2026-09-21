@@ -912,3 +912,38 @@ test('a pair agrees how it works once: kept with the peer, sent to the other sid
   run(['disconnect', 'codex-mode']);
   await close(chat);
 });
+
+test('a background Codex is told the agreement with every request, and told again when it changes', chatTests, () => {
+  assert.equal(run(['connect', 'codex-pact', '--cd', project, '--headless', '--exec-timeout', '3', '--mode', 'reviewer-author'], { as: 'claude-pact' }).status, 0);
+  try {
+    // A headless run has no memory of a status message: each one is a fresh `codex exec`, and a
+    // resumed thread may predate the agreement entirely.
+    assert.equal(run(['ask', 'codex-pact', 'first question', '--conversation', 'pact-talk', '--timeout', '30']).status, 0);
+    const first = codexCalls().pop();
+    assert.match(first.prompt, /How this pair works, as the user set it[\s\S]*You write, I review/);
+    assert.match(first.prompt, /"I" is "claude-test", "you" is you/);
+    assert.ok(first.prompt.indexOf('agent-bus policy') < first.prompt.indexOf('How this pair works'), 'the policy comes first and is never overridden by it');
+    assert.ok(first.prompt.indexOf('How this pair works') < first.prompt.indexOf('first question'), 'and the request comes after');
+
+    run(['mode', 'codex-pact', 'discuss']);
+    assert.equal(run(['ask', 'codex-pact', 'second question', '--conversation', 'pact-talk', '--timeout', '30']).status, 0);
+    const second = codexCalls().pop();
+    assert.match(second.prompt, /We think together/, 'the run that resumes the same thread gets the new one');
+    assert.doesNotMatch(second.prompt, /You write, I review/);
+
+    run(['mode', 'codex-pact', '--clear']);
+    assert.equal(run(['ask', 'codex-pact', 'third question', '--conversation', 'pact-talk', '--timeout', '30']).status, 0);
+    assert.doesNotMatch(codexCalls().pop().prompt, /How this pair works/, 'and nothing is claimed once it is withdrawn');
+  } finally { run(['disconnect', 'codex-pact']); }
+});
+
+test('an agreement that could not be withdrawn is not dropped on this side alone', chatTests, async () => {
+  const chat = fakeChat({ thread: 'thread-broken', cwd: project });        // the fake codex fails to queue for this one
+  fs.mkdirSync(path.join(bus, 'peers'), { recursive: true });
+  fs.writeFileSync(path.join(bus, 'peers', 'codex-stuck.json'), JSON.stringify({ kind: 'chat', thread: 'thread-broken', cwd: project, root: project, mode: { name: 'author-reviewer', text: 'I do the work and bring it to you finished.', since: '2026-09-21T00:00:00.000Z' } }));
+  const r = run(['mode', 'codex-stuck', '--clear']);
+  assert.equal(r.status, 6);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(bus, 'peers', 'codex-stuck.json'), 'utf8')).mode.name, 'author-reviewer', 'the other side still believes in it, so we do too');
+  fs.unlinkSync(path.join(bus, 'peers', 'codex-stuck.json'));
+  await close(chat);
+});

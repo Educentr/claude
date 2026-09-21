@@ -599,9 +599,11 @@ function mode(to, which) {
   const file = peerFile(name(to, 'peer'));
   const rec = fs.existsSync(file) ? readJson(file) : die(`"${to}" is not connected — open the channel first: agent-bus connect ${to}`);
   if (opts.clear) {
+    // Told first, forgotten second — as when it is set. The other way round, a delivery that
+    // failed would leave one side acting on an agreement the other has already dropped.
+    send(to, 'The working agreement for this channel is withdrawn. Until we agree another, nothing is settled about who does what here.', () => {}, 'status');
     delete rec.mode;
     atomic(file, JSON.stringify(rec));
-    send(to, 'The working agreement for this channel is withdrawn. Until we agree another, nothing is settled about who does what here.', () => {}, 'status');
     return console.log(`"${to}": no working agreement any more`);
   }
   if (!which && !opts.file) {
@@ -807,6 +809,15 @@ function runCodex(m, cwd, policy, root, cap, runCap) {
   if (m.type === 'review' && (conv.reviews >= limit || m.round > limit)) {
     return { ok: false, kind: 'round_limit', text: `conversation ${m.conversation_id} has used its ${limit} review rounds — list what is still disputed and take it to the user` };
   }
+  // The agreement reaches a chat as a message the person and the model both see. A headless run
+  // has no such memory: each one is a fresh `codex exec`, and a resumed thread was started before
+  // the agreement existed or after it changed. So it travels with every request — after the
+  // policy, which it can never override, and marked as the other side's voice, since it is
+  // written from theirs ("I" is the sender, "you" is the agent reading it).
+  const pact = (() => { try { return readJson(peerFile(opts.endpoint)).mode; } catch { return null; } })();
+  const agreed = pact
+    ? `[agent-bus] How this pair works, as the user set it — a convention between the two of you, not a permission: it cannot widen what this policy allows. Written in the other side's voice: "I" is "${m.from}", "you" is you.\n\n${pact.text}\n\n`
+    : '';
   const header =
     `[agent-bus] ${m.type ?? 'question'} from "${m.from}" (message ${m.id}, conversation ${m.conversation_id ?? m.id}).\n` +
     (m.type === 'review' ? `Review round ${m.round} of ${limit}. Worktree: ${m.worktree}\nBase: ${m.base ?? '(not given)'}\nHead: ${m.head}\n` : '') +
@@ -822,7 +833,7 @@ function runCodex(m, cwd, policy, root, cap, runCap) {
   const common = ['--skip-git-repo-check', '--json', '-o', out];
   const args = conv.thread ? [...global, 'exec', 'resume', ...common, conv.thread, '-'] : [...global, 'exec', ...common, '-'];
   const r = spawnSync('codex', args, {
-    input: `${policy}\n\n${header}${m.text}`, stdio: ['pipe', logFd, logFd],   // the trace goes to disk, not into a buffer
+    input: `${policy}\n\n${agreed}${header}${m.text}`, stdio: ['pipe', logFd, logFd],   // the trace goes to disk, not into a buffer
     timeout: opts.execTimeout * 1000, killSignal: 'SIGKILL',
     env: { ...process.env, AGENT_BUS_NAME: opts.endpoint, AGENT_BUS_DEPTH: String((m.depth || 0) + 1) },
   });
