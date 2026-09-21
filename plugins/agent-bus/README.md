@@ -33,60 +33,97 @@ agreed in the messages. A review is one thing it is used for, not what it is for
 | [`codex/`](codex/INTEGRATION.md) | everything for the Codex side: integration guide, installer, its skill, an optional `AGENTS.md` block |
 | `test/` | the transport end to end with a fake `codex` — no model call |
 
-## Install
+## Getting it running (once)
 
-Claude Code:
+1. **The plugin**, in Claude Code:
+
+   ```
+   /plugin marketplace add Educentr/claude
+   /plugin install agent-bus@educentr-marketplace
+   ```
+
+2. **The Codex side.** Codex is another program and does not see Claude Code's plugins, so the CLI
+   and the Codex skill have to be put where Codex looks. In Claude Code:
+
+   ```
+   /agent-bus:install
+   ```
+
+   Say **yes** when it offers `--codex-config`: without it a Codex chat receives your messages but
+   cannot answer — replying writes into the mailbox, and Codex's sandbox allows only its workspace.
+   Restart any Codex you already have open afterwards.
+
+   Without Claude Code, from a clone of this repository:
+
+   ```sh
+   plugins/agent-bus/codex/install.sh && agent-bus doctor
+   ```
+
+3. `agent-bus doctor` should be all `ok`. `PATH` must include `~/.local/bin`.
+
+## Using it (every day)
+
+**Open Codex yourself**, in the project you are working on, and say anything in it — a session
+nobody has spoken to has no conversation to deliver into, and `connect` will tell you so rather
+than guess. Then, in Claude Code:
 
 ```
-/plugin marketplace add Educentr/claude
-/plugin install agent-bus@educentr-marketplace
+/agent-bus:connect                  the Codex chat open for this project becomes the peer "codex"
+/agent-bus:mode author-reviewer     who does the work, who reviews, what a handover carries
 ```
 
-Codex is a different tool — it does not see Claude's plugins — so the CLI and its skill have to be
-put where Codex looks. From Claude Code, in the project you want reviewed:
+That is the whole setup. From then on you say what you want in your own words — "ask Codex
+whether…", "give this to Codex for review", "отдай на ревью" — and the exchange happens, with each
+message reported to you in one line. Both sides are in your Codex window: you see what was asked
+and what was answered, and you can answer instead of Codex whenever you like.
 
-```
-/agent-bus:install      copies the plugin to ~/.local/share/agent-bus, links the CLI and the Codex skill,
-                        and — if you say yes — lets a Codex chat write its replies into the mailbox
-/agent-bus:connect      opens the channel for this project; `disconnect` and `status` as arguments
-```
+**The working agreement is the part you only say once.** `/agent-bus:mode author-reviewer` means:
+I do the work and bring it finished, Codex reviews read-only, a handover is a commit on its own
+branch with the evidence already in hand, one conversation per change, blocking findings answered
+on their merits — and `APPROVE` is a review result, never permission to push, merge or deploy.
+`reviewer-author` is the mirror, `discuss` has no roles at all, and `agent-bus mode <peer> --file
+<path>` takes any text of your own. `agent-bus mode <peer>` prints what is in force; `--clear`
+withdraws it, and the other side is told.
 
-Several pairs at once: give each its own name — `/agent-bus:connect`, then
-`/agent-bus:connect codex-onei-53` for the next. One name has one answering side, and a name that
-is taken is refused with the name to use instead. `agent-bus chats` lists the open Codex chats
-with the last thing you typed in each, so you can say which one a pair should talk to
-(`--thread <id>`, the first characters are enough).
+**Several pairs at once** is normal: one name per pair. The first is `codex`, the next is
+`/agent-bus:connect codex-onei-53`, and so on — each Claude session talks to its own Codex. A name
+that is taken is refused with the name to use instead, so pairs never cross.
 
-Both are commands only the user can run: one changes your home directory, the other decides which
-chat is spoken to (or starts another agent — agents do not spawn each other). Without Claude Code,
-from a clone of this repository:
+**Which Codex am I talking to?** `agent-bus chats` lists the open ones with the directory and the
+last thing you typed in each, plus any that are open with nothing said in them yet. Two chats for
+one project: it asks which, and `--thread <id>` (the first few characters are enough) says so.
 
-```sh
-plugins/agent-bus/codex/install.sh && agent-bus doctor      # links into the clone; git pull updates it
-agent-bus connect codex --cd /abs/path/to/project           # agent-bus disconnect codex   to close it
-```
+**No Codex open?** Then `connect` starts one in the background instead — read-only, answering by
+itself. Nobody watches that one, so ask it to report what matters back to you. `--headless` asks
+for it even when a chat is open.
 
-**Updating**: `/plugin update agent-bus@educentr-marketplace`, then `/agent-bus:install` again —
-Codex does not see Claude Code's plugins, so its copy of the CLI and skill is refreshed
-separately. Then reopen any channel that had a background Codex, since a running listener keeps
-the code it loaded. `agent-bus` on `PATH` may be the installed copy, and a copy cannot update
-itself — the installer refuses that rather than relinking to itself.
+**Closing**: `/agent-bus:connect disconnect` (or `agent-bus disconnect <peer>`). A background Codex
+is stopped; a chat of yours is left alone, and so is anything already queued into it.
 
-Full guide: [`codex/INTEGRATION.md`](codex/INTEGRATION.md).
+### When something is off
 
-## Use
+| what you see | what it means |
+|---|---|
+| `nothing has been said in it yet` | the Codex there is open but empty — type anything in it, then connect again |
+| `no Codex chat is open for …` | none in that directory; open one, or take the background offer |
+| `… is already connected for …` | that name belongs to another pair; use the name it suggests |
+| exit 2 from a wait | still queued or still running — `agent-bus await <id>`, never resend |
+| exit 4 | the run failed (timeout, bad worktree, a spent limit) — not a verdict |
+| exit 6 | the chat is not open any more; nothing was delivered — connect again |
+| a background listener that keeps dying | start it from a terminal, not from inside an agent's shell (see Known limits) |
 
-- `/agent-bus:mode author-reviewer` right after connecting — then "I work, you review, here is what
-  a handover carries" holds for every exchange, and neither side asks again.
-- "Ask Codex whether …" → the `agent-bus` skill.
-- "Review this with Codex before pushing" → `/agent-bus:codex-review`.
-- Codex can start an exchange too: `agent-bus send claude-<label> "…"`, and Claude answers with
-  `agent-bus reply`.
+`agent-bus doctor` shows the mailbox, Node, the Codex CLI, every pair and its agreement.
+`agent-bus recover <peer>` lists what was claimed and never answered.
 
-A review is a commit in its own worktree, a full head SHA, a round number — and an answer that
-starts `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES`. At most five rounds per change; what is
-still disputed after that goes to the user. `APPROVE` is a review result, never permission to
-push, merge or deploy.
+### Updating
+
+`/plugin update agent-bus@educentr-marketplace`, then `/agent-bus:install` again — the Codex side
+is refreshed separately. Reopen any channel that had a background Codex, since a running listener
+keeps the code it loaded. `agent-bus` on `PATH` may be the installed copy, and a copy cannot update
+itself: the installer refuses that instead of relinking to itself and reporting success. In
+`--link` mode the links point at a clone, so `git pull` there is the update.
+
+Full guide for the Codex side: [`codex/INTEGRATION.md`](codex/INTEGRATION.md).
 
 ## Design decisions
 
