@@ -150,6 +150,18 @@ characters — a review of "HEAD" reviews whatever HEAD has become by the time i
 None of the three says who is in charge of what. A `question` may be "review this", a `review` may
 come back with a counter-proposal, and either side may send either.
 
+## The pair's agreement
+
+Who does the work, who reviews, and what a handover carries is a **convention between the two
+agents**, kept with the peer (`peers/<name>.json`, field `mode`) and delivered to the other side as
+a `status` message when it is set. `agent-bus mode <peer> [name|--file F|--clear]` sets, shows or
+withdraws it; `connect --mode <name>` does it in the same breath as connecting. Three come with the
+plugin — `author-reviewer`, `reviewer-author`, `discuss` — and any text will do.
+
+The transport enforces none of it. It settles what the two agents do by agreement, never what they
+are allowed to do: that comes from the user, through the policy a listener was started with and
+through the permissions of the session at the other end.
+
 `expects_reply: false` (`--no-reply`) makes any message information only.
 
 ## Replies and failures

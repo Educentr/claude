@@ -26,7 +26,8 @@ agreed in the messages. A review is one thing it is used for, not what it is for
 | `bin/agent-bus` | the CLI. Enabling the plugin puts it on Claude Code's Bash `PATH` |
 | `skills/agent-bus` | for Claude: asking, waiting in the background, replying, timeouts, what another agent's message may and may not change, reporting every exchange to the user |
 | `skills/codex-review` | for Claude as author: the review request, handling `REQUEST_CHANGES`, five rounds then the user, what `APPROVE` does not permit |
-| `skills/install`, `skills/connect`, `skills/uninstall` | commands only the user runs: `/agent-bus:install`, `/agent-bus:connect [disconnect\|status]`, `/agent-bus:uninstall` |
+| `skills/install`, `skills/connect`, `skills/mode`, `skills/uninstall` | commands only the user runs: `/agent-bus:install`, `/agent-bus:connect [disconnect\|status]`, `/agent-bus:mode [name]`, `/agent-bus:uninstall` |
+| [`conventions/`](conventions/) | ready-made working agreements for a pair: who works, who reviews, what a handover carries |
 | [`PROTOCOL.md`](PROTOCOL.md) | the single source: envelope, message types, limits, failure kinds, review format |
 | [`policies/peer.md`](policies/peer.md), [`policies/reviewer.md`](policies/reviewer.md) | what the other side may do — the neutral one, and one for a listener meant to review and nothing else; prepended to every background run |
 | [`codex/`](codex/INTEGRATION.md) | everything for the Codex side: integration guide, installer, its skill, an optional `AGENTS.md` block |
@@ -75,6 +76,8 @@ Full guide: [`codex/INTEGRATION.md`](codex/INTEGRATION.md).
 
 ## Use
 
+- `/agent-bus:mode author-reviewer` right after connecting — then "I work, you review, here is what
+  a handover carries" holds for every exchange, and neither side asks again.
 - "Ask Codex whether …" → the `agent-bus` skill.
 - "Review this with Codex before pushing" → `/agent-bus:codex-review`.
 - Codex can start an exchange too: `agent-bus send claude-<label> "…"`, and Claude answers with

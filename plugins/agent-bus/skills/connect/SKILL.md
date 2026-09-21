@@ -57,6 +57,9 @@ Arguments: `$ARGUMENTS`
      Codex they can talk to, or before connecting if they want to choose up front.
 4. Report: the peer name, which chat (or that it is a background one), the project root, and how
    to close it.
+5. Offer the next step in one line: `/agent-bus:mode` settles who does the work and who reviews,
+   so it does not have to be said in every message. `agent-bus connect <peer> --mode <name>` does
+   both at once when the user already knows which one they want.
 
 ## disconnect
 

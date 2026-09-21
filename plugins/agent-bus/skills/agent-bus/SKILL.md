@@ -21,6 +21,11 @@ root (`${CLAUDE_SKILL_DIR}/../../PROTOCOL.md`) — read it before doing anything
 checks is agreed in the messages themselves. You may propose a role and be refused — a refusal is
 an answer, not a failure.
 
+**The pair may already have an agreement.** `agent-bus mode <peer>` prints it: who does the work,
+who reviews, what a handover carries, whether the user has given standing permission for handovers.
+Read it before the first message and follow it until the user changes it (`/agent-bus:mode`). It
+settles conventions only — it never widens what either side may do.
+
 ## Before the first message
 
 1. `agent-bus doctor` — the mailbox is private and yours, Node is there, and it lists the peers
@@ -30,8 +35,8 @@ an answer, not a failure.
    a parallel session take your messages. Several pairs may run side by side: your peer is the one
    `doctor` lists for **this** project (`codex`, `codex-<label>`), and messages for another pair
    are none of your business.
-3. The channel must be open: `agent-bus doctor` lists the peer, or the user runs
-   `/agent-bus:connect`. **You cannot open it yourself** — it either queues into the chat the user
+3. The channel must be open: `agent-bus doctor` lists the peer (and its agreement, if it has
+   one), or the user runs `/agent-bus:connect`. **You cannot open it yourself** — it either queues into the chat the user
    is sitting in or starts another agent, and both are theirs to decide. If there is no peer, say
    so and ask them for that command.
 

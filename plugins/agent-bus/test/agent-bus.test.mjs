@@ -883,3 +883,32 @@ test('a working directory that could not be read is not an absent chat either', 
   assert.ok(!fs.existsSync(path.join(bus, 'peers', 'codex-nocwd.json')), 'and no background Codex was started');
   await close(chat);
 });
+
+test('a pair agrees how it works once: kept with the peer, sent to the other side, shown by doctor', chatTests, async () => {
+  const chat = fakeChat({ thread: 'chat-for-mode', cwd: project });
+  assert.match(run(['mode', 'codex-mode', 'author-reviewer']).stderr, /is not connected/, 'an agreement needs a pair');
+  assert.equal(run(['connect', 'codex-mode', '--cd', project, '--mode', 'author-reviewer'], { as: 'claude-mode' }).status, 0);
+  // Connecting with --mode does both: the handshake, then the agreement as information.
+  const [handshake, agreement] = queuedMessages().slice(-2);
+  assert.match(handshake.message, /The agent-bus channel to you is open/);
+  assert.match(agreement.message, /^\[agent-bus\] status from "claude-mode"/m);
+  assert.match(agreement.message, /No reply is expected/);
+  assert.match(agreement.message, /The user has set how this pair works[\s\S]*I do the work and bring it to you finished/);
+  assert.match(agreement.message, /APPROVE is the result of a review/);
+
+  assert.match(run(['mode', 'codex-mode']).stdout, /"author-reviewer", agreed \d{4}-/);
+  assert.match(run(['doctor']).stdout, /peer codex-mode — Codex chat chat-for-mode.*working agreement "author-reviewer"/);
+  // Anything the user writes themselves does just as well.
+  const mine = path.join(tmp, 'our-way.md');
+  fs.writeFileSync(mine, 'You write the tests, I write the code, and we swap when either of us gets stuck.');
+  assert.match(run(['mode', 'codex-mode', '--file', mine]).stdout, /"our-way" set/);
+  assert.match(run(['mode', 'codex-mode']).stdout, /swap when either of us gets stuck/);
+  assert.match(queuedMessages().pop().message, /You write the tests/);
+  // And it can be taken back, which the other side is told about too.
+  assert.match(run(['mode', 'codex-mode', '--clear']).stdout, /no working agreement any more/);
+  assert.match(queuedMessages().pop().message, /agreement for this channel is withdrawn/);
+  assert.match(run(['mode', 'codex-mode']).stdout, /has no working agreement[\s\S]*author-reviewer \| discuss \| reviewer-author/);
+  assert.match(run(['mode', 'codex-mode', 'no-such-way']).stderr, /no agreement called "no-such-way"/);
+  run(['disconnect', 'codex-mode']);
+  await close(chat);
+});

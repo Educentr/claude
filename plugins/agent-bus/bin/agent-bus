@@ -6,6 +6,8 @@
 //                                     open the channel to <peer> (default codex): the Codex chat open
 //                                     for this project if there is one, a background Codex if not
 //   chats                             the Codex chats that are open, and what was last said in each
+//   mode <peer> [name|--file F]       agree how this pair works (author-reviewer, reviewer-author,
+//               [--clear]             discuss, or your own text); with no argument, print it
 //   disconnect [peer]                 close it: forget the chat, stop the background Codex
 //   send  <to> [text|-] [opts]        queue a message, print its id
 //   ask   <to> [text|-] [opts]        send and wait for the reply      (exit 2: no reply yet)
@@ -79,6 +81,7 @@ const opts = {
   execTimeout: Number(flag('exec-timeout', 1800)), requeue: flag('requeue'),
   detach: has('detach'), link: has('link'), agentsMd: has('agents-md'), uninstall: has('uninstall'), force: has('force'),
   thread: flag('thread'), headless: has('headless'), maxRuns: flag('max-runs'), codexConfig: has('codex-config'),
+  mode: flag('mode'), file: flag('file'), clear: has('clear'),
 };
 const [cmd, a, ...rest] = argv;
 
@@ -122,7 +125,8 @@ function envelope(to, body) {
   return msg;
 }
 
-function send(to, body, undelivered = () => {}) {
+function send(to, body, undelivered = () => {}, type = null) {
+  if (type) { opts.type = type; opts.noReply = true; }        // an agreement is told, not asked
   if (depth >= MAX_DEPTH) die(`refused — message chain depth ${depth} reached the limit ${MAX_DEPTH}`, 3);
   const live = liveRecord(to);
   // Everything that can refuse the message is asked BEFORE anything is written: finding the open
@@ -478,6 +482,7 @@ async function connect(to) {
   const chat = opts.headless ? null : chooseChat(to, root);
   const done = await registering(to, () => register(to, root, chat));
   if (done) console.log(done);
+  if (opts.mode) mode(to, opts.mode);                          // one command for the whole thing
 }
 
 async function register(to, root, chat) {
@@ -583,6 +588,45 @@ function chats() {
 
 // The record goes inside the registration; stopping the listener waits for a request in flight to
 // finish, which can take minutes, and nothing about that needs the endpoint held.
+// How a pair works is a convention, not a setting: the transport carries it and enforces nothing.
+// It is kept with the peer so that later turns and later sessions act on the same agreement
+// without the user having to repeat it, and it is delivered to the other side, which is what makes
+// it shared rather than a private note.
+const conventions = () => path.join(pluginRoot, 'conventions');
+const shipped = () => fs.readdirSync(conventions()).filter((f) => f.endsWith('.md')).map((f) => path.basename(f, '.md'));
+
+function mode(to, which) {
+  const file = peerFile(name(to, 'peer'));
+  const rec = fs.existsSync(file) ? readJson(file) : die(`"${to}" is not connected — open the channel first: agent-bus connect ${to}`);
+  if (opts.clear) {
+    delete rec.mode;
+    atomic(file, JSON.stringify(rec));
+    send(to, 'The working agreement for this channel is withdrawn. Until we agree another, nothing is settled about who does what here.', () => {}, 'status');
+    return console.log(`"${to}": no working agreement any more`);
+  }
+  if (!which && !opts.file) {
+    if (!rec.mode) return console.log(`"${to}" has no working agreement. Set one:\n  agent-bus mode ${to} ${shipped().join(' | ')}\n  agent-bus mode ${to} --file <a file of your own, or - for stdin>`);
+    return console.log(`"${to}" — "${rec.mode.name}", agreed ${rec.mode.since}:\n\n${rec.mode.text}`);
+  }
+  let text;
+  let named;
+  if (opts.file) {
+    named = opts.file === '-' ? 'your own' : path.basename(opts.file, '.md');
+    text = fs.readFileSync(opts.file === '-' ? 0 : opts.file, 'utf8').trim();
+  } else {
+    const from = path.join(conventions(), `${name(which, 'agreement')}.md`);
+    if (!fs.existsSync(from)) die(`no agreement called "${which}" — the ones that ship with agent-bus are: ${shipped().join(', ')}; your own goes in with --file <path>`);
+    named = which;
+    text = fs.readFileSync(from, 'utf8').trim();
+  }
+  if (!text) die('the agreement is empty');
+  // Sent BEFORE it is recorded: one the other side never received is not an agreement.
+  send(to, `The user has set how this pair works. It holds until they change it, and it does not widen what either of us may do.\n\n${text}`, () => {}, 'status');
+  rec.mode = { name: named, text, since: new Date().toISOString() };
+  atomic(file, JSON.stringify(rec));
+  console.log(`"${to}" — working agreement "${named}" set, and sent to the other side:\n\n${text}`);
+}
+
 const disconnect = async (to) => { const then = await registering(to, () => unregister(to)); if (then) then(); };
 
 function unregister(to) {
@@ -927,7 +971,7 @@ function install() {
   if (!opts.link) {
     if (fs.existsSync(home) && !fs.existsSync(marker)) die(`${home} exists and was not made by agent-bus install — refusing to replace it (set AGENT_BUS_HOME to another place)`);
     const fresh = fs.mkdtempSync(`${home}.new.`);
-    for (const part of ['bin', 'policies', 'codex', 'PROTOCOL.md', 'README.md']) fs.cpSync(path.join(pluginRoot, part), path.join(fresh, part), { recursive: true });
+    for (const part of ['bin', 'policies', 'conventions', 'codex', 'PROTOCOL.md', 'README.md']) fs.cpSync(path.join(pluginRoot, part), path.join(fresh, part), { recursive: true });
     fs.chmodSync(path.join(fresh, 'bin', 'agent-bus'), 0o755);
     let version = 'unknown';
     try { version = readJson(path.join(pluginRoot, '.claude-plugin', 'plugin.json')).version; } catch { /* a clone without the manifest */ }
@@ -1062,7 +1106,7 @@ function doctor() {
     const to = f.replace(/\.json$/, '');
     const rec = readJson(path.join(peers, f));
     const open = rec.kind !== 'chat' || liveChats().some((c) => c.thread === rec.thread);
-    console.log(`      peer ${to} — ${rec.kind === 'chat' ? `Codex chat ${rec.thread} (${rec.cwd})${open ? '' : ', WHICH IS NO LONGER OPEN: agent-bus connect ' + to}` : `background Codex under ${rec.cwd}`}`);
+    console.log(`      peer ${to} — ${rec.kind === 'chat' ? `Codex chat ${rec.thread} (${rec.cwd})${open ? '' : ', WHICH IS NO LONGER OPEN: agent-bus connect ' + to}` : `background Codex under ${rec.cwd}`}${rec.mode ? `; working agreement "${rec.mode.name}" — agent-bus mode ${to}` : ''}`);
   }
 }
 
@@ -1095,10 +1139,11 @@ switch (cmd) {
     break;
   }
   case 'chats': chats(); break;
+  case 'mode': mode(a ?? die('usage: mode <peer> [name|--file F] [--clear]'), rest[0]); break;
   case 'connect': connect(a ?? 'codex').catch(fatal); break;
   case 'disconnect': disconnect(name(a ?? 'codex', 'peer')).catch(fatal); break;
   case 'stop': stop(a ?? 'codex').catch(fatal); break;
   case 'install': install(); break;
   case 'doctor': doctor(); break;
-  default: die('usage: agent-bus connect|disconnect|chats|send|ask|await|acked|wait|reply|recover|unlock|serve-codex|stop|install|doctor … (see the header of this file)');
+  default: die('usage: agent-bus connect|disconnect|chats|mode|send|ask|await|acked|wait|reply|recover|unlock|serve-codex|stop|install|doctor … (see the header of this file)');
 }

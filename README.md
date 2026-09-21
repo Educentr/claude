@@ -6,7 +6,7 @@ Marketplace of Claude Code plugins for API development workflows.
 
 | Plugin | Description | Version |
 |--------|-------------|---------|
-| [agent-bus](./plugins/agent-bus) | Claude Code ↔ Codex: a channel into the Codex chat you have open (or a background one), agent-to-agent questions, round-based code review | 2.1.2 |
+| [agent-bus](./plugins/agent-bus) | Claude Code ↔ Codex: a channel into the Codex chat you have open (or a background one), agent-to-agent questions, round-based code review | 2.2.0 |
 | [api-tools](./plugins/api-tools) | Convert API documentation to OpenAPI specs | 1.0.0 |
 | [go-project-starter](./plugins/go-project-starter) | Generate Go microservices from YAML configs | 1.0.0 |
 
@@ -25,6 +25,7 @@ Commands only the user runs:
 |---------|-------------|
 | `/agent-bus:install` | Put the CLI and the Codex-side skill where Codex finds them (copy in `~/.local/share/agent-bus`, links in `~/.local/bin` and `~/.agents/skills`); optionally the `AGENTS.md` block and the mailbox as a writable root for Codex |
 | `/agent-bus:connect` | Open the channel for the current project — the Codex chat you have open, or `--headless` for a background one; `disconnect` / `status` as arguments |
+| `/agent-bus:mode` | Agree how the pair works — who does the work, who reviews, what a handover carries — once, instead of in every message |
 | `/agent-bus:uninstall` | Remove what `install` put there; the mailbox is left alone |
 
 ### api-tools
