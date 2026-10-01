@@ -354,9 +354,13 @@ function threadRows(ids) {
   if (!ids.length) return { rows, read: true };
   if (!fs.existsSync(db)) return { rows, read: false };
   const list = ids.map((i) => `'${i.replace(/[^0-9a-f-]/g, '')}'`).join(',');
-  const r = spawnSync('sqlite3', ['-json', '-readonly', db,
-    `select id, cwd, coalesce(thread_source, source) as kind, coalesce(nullif(name,''), nullif(title,''), nullif(preview,''), first_user_message) as label from threads where id in (${list})`],
-  { encoding: 'utf8', timeout: 10000 });
+  // `-readonly` fails to open the store outright on some sqlite3 builds (CANTOPEN
+  // on even an unlocked copy), so read through URI modes: mode=ro first (locks
+  // honoured, same intent), immutable=1 as the fallback (no locks, a snapshot —
+  // stale is fine, this only identifies threads).
+  const q = `select id, cwd, coalesce(thread_source, source) as kind, coalesce(nullif(name,''), nullif(title,''), nullif(preview,''), first_user_message) as label from threads where id in (${list})`;
+  let r = spawnSync('sqlite3', ['-json', `file:${db}?mode=ro`, q], { encoding: 'utf8', timeout: 10000 });
+  if (r.error || r.status !== 0) r = spawnSync('sqlite3', ['-json', `file:${db}?immutable=1`, q], { encoding: 'utf8', timeout: 10000 });
   if (r.error || r.status !== 0) return { rows, read: false };
   if (!r.stdout.trim()) return { rows, read: true };            // read fine; none of them is in it
   try { for (const row of JSON.parse(r.stdout)) rows.set(row.id, row); } catch { return { rows, read: false }; }
