@@ -1,5 +1,5 @@
 // The transport, end to end, with a fake Codex on PATH — no model is called, nothing leaves the
-// machine. Run: node --test plugins/agent-bus/test/
+// machine. Run: node --test plugins/agent-bus/test/agent-bus.test.mjs
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -951,4 +951,222 @@ test('an agreement that could not be withdrawn is not dropped on this side alone
   assert.equal(JSON.parse(fs.readFileSync(path.join(bus, 'peers', 'codex-stuck.json'), 'utf8')).mode.name, 'author-reviewer', 'the other side still believes in it, so we do too');
   fs.unlinkSync(path.join(bus, 'peers', 'codex-stuck.json'));
   await close(chat);
+});
+
+
+// Regression: a temporary permission status used to end ask successfully; replacing
+// that reply later was invisible to a caller whose waiter had already exited.
+const answerFile = (id) => path.join(bus, 'replies', `${id}.json`);
+const answer = (id) => JSON.parse(fs.readFileSync(answerFile(id), 'utf8'));
+const notices = (endpoint, id) => ['inbox', 'claimed'].flatMap((stage) =>
+  ls(stage, endpoint).map((f) => JSON.parse(fs.readFileSync(path.join(bus, stage, endpoint, f), 'utf8')))
+    .filter((m) => m.in_reply_to === id));
+function start(args, as = 'claude-test') {
+  const child = spawn(process.execPath, [CLI, ...args], { env: { ...env, AGENT_BUS_NAME: as }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '', stderr = '';
+  child.stdout.on('data', (d) => { stdout += d; });
+  child.stderr.on('data', (d) => { stderr += d; });
+  const result = new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('exit', (status) => resolve({ status, stdout, stderr }));
+  });
+  return { child, result };
+}
+const eventually = async (predicate) => {
+  for (const end = Date.now() + 5000; Date.now() < end;) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  assert.fail('condition not reached within 5s');
+};
+const receiptRequest = (reader = 'claude-receipts', worker = 'codex-receipts') =>
+  run(['send', worker, 'review the checkpoint'], { as: reader }).stdout.trim();
+
+test('pending progress keeps await open until the final answer', async () => {
+  const id = receiptRequest();
+  assert.equal(run(['reply', id, 'permission pending', '--pending']).status, 0);
+  const waiting = start(['await', id, '--timeout', '5']);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(waiting.child.exitCode, null, 'a progress file is not a final answer');
+  assert.equal(run(['reply', id, 'all five findings']).status, 0);
+  const got = await waiting.result;
+  assert.equal(got.status, 0, got.stderr);
+  assert.equal(got.stdout, 'all five findings\n');
+  assert.match(got.stderr, /pending: permission pending/);
+});
+
+test('pending timeout reports no final answer and recovery still lists the request', () => {
+  const id = receiptRequest('claude-pending', 'codex-pending');
+  run(['wait', 'codex-pending', '--timeout', '1']);
+  run(['reply', id, 'environment unavailable', '--pending']);
+  const got = run(['await', id, '--timeout', '1']);
+  assert.equal(got.status, 2);
+  assert.equal(got.stdout, '');
+  assert.match(run(['recover', 'codex-pending']).stdout, new RegExp(id));
+  assert.notEqual(run(['recover', 'codex-pending', '--requeue', id]).status, 0, 'do not rerun work merely because it is waiting');
+});
+
+test('reading a final reply does not invent an agent receipt', () => {
+  const id = receiptRequest();
+  run(['reply', id, 'final answer']);
+  const read = run(['await', id, '--timeout', '1']);
+  assert.equal(read.status, 0);
+  assert.match(read.stderr, new RegExp(`revision ${answer(id).revision}`));
+  const delivered = run(['delivered', id, '--timeout', '1']);
+  assert.equal(delivered.status, 2);
+  assert.match(delivered.stderr, /stored is not read/);
+  assert.equal(fs.existsSync(path.join(bus, 'receipts', `${id}.json`)), false);
+});
+
+test('only the original requester can acknowledge the exact final version', () => {
+  const id = receiptRequest();
+  run(['reply', id, 'review complete']);
+  const revision = answer(id).revision;
+  assert.equal(run(['received', id, '--revision', revision], { as: 'another-pair' }).status, 1);
+  assert.equal(run(['received', id], { as: 'claude-receipts' }).status, 1);
+  assert.equal(run(['received', id, '--revision', revision], { as: 'claude-receipts' }).status, 0);
+  const got = run(['delivered', id, '--timeout', '1']);
+  assert.equal(got.status, 0, got.stderr);
+  assert.match(got.stdout, /read by claude-receipts/);
+});
+
+test('replacing a reply invalidates its old receipt and emits an update notice', () => {
+  const id = receiptRequest();
+  run(['reply', id, 'permission blocked']);
+  const old = answer(id).revision;
+  run(['received', id, '--revision', old], { as: 'claude-receipts' });
+  run(['reply', id, 'full technical answer']);
+  assert.notEqual(answer(id).revision, old);
+  assert.equal(run(['delivered', id, '--timeout', '1']).status, 2);
+  assert.match(run(['received', id, '--revision', old], { as: 'claude-receipts' }).stderr, /reply changed/);
+  assert.equal(notices('claude-receipts', id).length, 2);
+  run(['received', id, '--revision', answer(id).revision], { as: 'claude-receipts' });
+  assert.equal(run(['delivered', id, '--timeout', '1']).status, 0);
+});
+
+test('progress cannot replace a final answer or claim to await receipt', () => {
+  const id = receiptRequest();
+  assert.equal(run(['reply', id, 'pending', '--pending', '--wait-received']).status, 1);
+  assert.equal(fs.existsSync(answerFile(id)), false);
+  run(['reply', id, 'pending', '--pending']);
+  assert.match(run(['received', id, '--revision', answer(id).revision], { as: 'claude-receipts' }).stderr, /no final reply/);
+  run(['reply', id, 'complete']);
+  assert.match(run(['reply', id, 'pending again', '--pending']).stderr, /final reply/);
+  assert.equal(answer(id).text, 'complete');
+});
+
+test('an updated answer remains discoverable after its waiter timed out', () => {
+  const id = receiptRequest('claude-late', 'codex-late');
+  assert.equal(run(['await', id, '--timeout', '1']).status, 2);
+  run(['reply', id, 'late answer']);
+  const note = JSON.parse(run(['wait', 'claude-late', '--timeout', '1']).stdout);
+  assert.deepEqual([note.type, note.expects_reply, note.in_reply_to], ['status', false, id]);
+  assert.match(note.text, /agent-bus await/);
+  assert.match(note.text, /agent-bus received/);
+  assert.equal(run(['await', id, '--timeout', '1']).stdout, 'late answer\n');
+});
+
+test('retrying identical replies produces one notice even with concurrent writers', async () => {
+  const id = receiptRequest('claude-dedup', 'codex-dedup');
+  const racers = Array.from({ length: 5 }, () => start(['reply', id, 'identical'], 'codex-dedup'));
+  const results = await Promise.all(racers.map((c) => c.result));
+  assert.ok(results.every((r) => r.status === 0), JSON.stringify(results));
+  assert.equal(notices('claude-dedup', id).length, 1);
+  run(['wait', 'claude-dedup', '--timeout', '1']);
+  run(['reply', id, 'identical']);
+  assert.equal(notices('claude-dedup', id).length, 1, 'a claimed notice stays deduplicated');
+  run(['reply', id, 'updated']);
+  assert.equal(notices('claude-dedup', id).length, 2);
+});
+
+test('reply --wait-received returns only after the requester explicitly reads it', async () => {
+  const id = receiptRequest();
+  const writer = start(['reply', id, 'ready', '--wait-received', '--timeout', '5']);
+  await eventually(() => fs.existsSync(answerFile(id)));
+  assert.equal(writer.child.exitCode, null);
+  run(['await', id, '--timeout', '1'], { as: 'claude-receipts' });
+  run(['received', id, '--revision', answer(id).revision], { as: 'claude-receipts' });
+  const got = await writer.result;
+  assert.equal(got.status, 0, got.stderr);
+  assert.match(got.stdout, /read by claude-receipts/);
+});
+
+test('reply --wait-received times out explicitly while preserving the answer', () => {
+  const id = receiptRequest();
+  const got = run(['reply', id, 'durable answer', '--wait-received', '--timeout', '1']);
+  assert.equal(got.status, 2);
+  assert.match(got.stderr, /no acknowledgement/);
+  assert.equal(run(['await', id, '--timeout', '1']).stdout, 'durable answer\n');
+});
+
+test('receipts support legacy final replies but require an existing request', () => {
+  const id = receiptRequest();
+  fs.writeFileSync(answerFile(id), JSON.stringify({ id, ok: true, kind: 'reply', text: 'legacy' }));
+  const read = run(['await', id, '--timeout', '1']);
+  const revision = read.stderr.match(/revision ([a-f0-9]{64})/)[1];
+  assert.equal(run(['received', id, '--revision', revision], { as: 'claude-receipts' }).status, 0);
+  assert.equal(run(['delivered', id, '--timeout', '1']).status, 0);
+  run(['reply', 'orphan-reply', 'no requester']);
+  const orphan = run(['received', 'orphan-reply', '--revision', answer('orphan-reply').revision], { as: 'claude-receipts' });
+  assert.equal(orphan.status, 1);
+  assert.match(orphan.stderr, /no request envelope/);
+});
+
+test('failed reply notifications preserve results and do not stop a serving endpoint', chatTests, async () => {
+  const chat = fakeChat({ thread: 'receipt-reader-chat', cwd: project });
+  run(['connect', 'reader-closed', '--cd', project, '--thread', 'receipt-reader-chat']);
+  await close(chat);
+  const id = receiptRequest('reader-closed', 'codex');
+  const got = run(['await', id, '--timeout', '10']);
+  assert.equal(got.status, 0, got.stderr);
+  assert.match(got.stdout, /VERDICT: APPROVE/);
+  assert.equal(run(['delivered', id, '--timeout', '1']).status, 2);
+  assert.equal(run(['ask', 'codex', 'still serving', '--timeout', '10']).status, 0);
+  run(['disconnect', 'reader-closed']);
+});
+
+
+test('notification discovery errors do not kill the server or misreport a chat as absent', chatTests, async () => {
+  const chat = fakeChat({ thread: 'receipt-deaf-chat', cwd: project });
+  run(['connect', 'reader-deaf', '--cd', project, '--thread', 'receipt-deaf-chat']);
+  const blindBin = path.join(tmp, 'receipt-deaf-lsof');
+  fs.mkdirSync(blindBin);
+  fs.writeFileSync(path.join(blindBin, 'lsof'), '#!/bin/sh\necho "lsof: denied" >&2\nexit 1\n', { mode: 0o755 });
+  const listener = await serve(['--endpoint', 'codex-receipt-deaf', '--exec-timeout', '3'], project, { PATH: `${blindBin}:${env.PATH}` });
+  try {
+    const id = receiptRequest('reader-deaf', 'codex-receipt-deaf');
+    assert.equal(run(['await', id, '--timeout', '10']).status, 0);
+    assert.equal(run(['delivered', id, '--timeout', '1']).status, 2);
+    assert.equal(run(['ask', 'codex-receipt-deaf', 'still serving', '--timeout', '10']).status, 0);
+  } finally {
+    await stop(listener);
+    run(['disconnect', 'reader-deaf']);
+    await close(chat);
+  }
+});
+
+test('progress notifications respect the request size limit while preserving full progress', () => {
+  const id = receiptRequest('claude-big-progress', 'codex-big-progress');
+  const text = 'waiting '.repeat(10000);
+  const got = run(['reply', id, '-', '--pending'], { input: text });
+  assert.equal(got.status, 0, got.stderr);
+  assert.equal(answer(id).text, text.trim());
+  const note = notices('claude-big-progress', id)[0];
+  assert.ok(Buffer.byteLength(note.text) <= 65536);
+  assert.equal(note.expects_reply, false);
+});
+
+
+test('concurrent pending writers cannot overwrite the final reply', async () => {
+  for (let round = 0; round < 4; round++) {
+    const id = receiptRequest('claude-progress-race', 'codex-progress-race');
+    const writers = Array.from({ length: 12 }, (_, i) => start(
+      ['reply', id, i === 6 ? 'final answer' : `pending ${i}`, ...(i === 6 ? [] : ['--pending'])]));
+    const results = await Promise.all(writers.map((c) => c.result));
+    assert.equal(results[6].status, 0, results[6].stderr);
+    for (const r of results) assert.ok(r.status === 0 || /final reply/.test(r.stderr), r.stderr);
+    assert.equal(answer(id).text, 'final answer');
+    assert.equal(answer(id).pending, false);
+    assert.equal(ls('locks').includes(`${id}.replying`), false);
+  }
 });

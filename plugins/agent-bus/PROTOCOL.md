@@ -78,8 +78,11 @@ What actually limits it:
 ```
 inbox/<endpoint>/<id>.json      queued for an endpoint
 claimed/<endpoint>/<id>.json    taken by that endpoint (moved by rename — one taker wins)
-acks/<id>.json                  read receipt: the TRANSPORT has taken the message
-replies/<id>.json               the reply to message <id>
+acks/<id>.json                  claim receipt: the TRANSPORT has taken the message
+replies/<id>.json               the reply or pending progress for message <id>
+receipts/<id>.json              the requester acknowledged a specific final reply revision
+locks/<id>.replying            orders progress/final writes; removed after storing
+locks/reply-<hash>.notifying    serialises identical reply notifications; removed after sending
 peers/<name>.json               what `connect` found: {kind: 'chat', thread, cwd, pid} or
                                 {kind: 'headless', cwd}
 conversations/<endpoint>.<project-hash>/<conv>.json
@@ -172,7 +175,8 @@ through the permissions of the session at the other end. The policy always wins.
 
 ## Replies and failures
 
-`replies/<id>.json` is `{id, ok, kind, ts, text}`.
+`replies/<id>.json` is `{id, ok, kind, pending, revision, ts, text}`. Missing `pending` in
+older final replies means false; `revision` is recomputed when reading, including legacy replies.
 
 - `ok: true` — an answer. **A review that says `REQUEST_CHANGES` is an answer.**
 - `ok: false` — the run itself failed; `ask` / `await` exit **4** and print `kind`:
@@ -194,6 +198,53 @@ Waiting is separate from running. `ask` / `await` exit **2** when the wait (`--t
 600 s) ends first: the request is still queued or running. **Continue with `agent-bus await <id>`;
 never send it again** — that would run it twice. The run has its own deadline
 (`serve-codex --exec-timeout`, default 1800 s).
+
+## Pending progress and confirmed receipt
+
+A temporary blocker is progress, not the answer:
+
+```sh
+agent-bus reply <id> - --pending < progress.md
+agent-bus reply <id> - --wait-received --timeout 60 < answer.md
+```
+
+`--pending` stores `kind: progress, pending: true`. `ask` / `await` print it to stderr and keep
+waiting for a final answer; timeout remains exit **2**. Progress cannot replace an existing
+final reply and cannot be combined with `--wait-received`. A terminal refusal is still a final
+answer. Both peers must use the updated CLI: older waiters do not recognise pending progress.
+Check `doctor` on both sides for `pending progress + revision-bound received/delivered`.
+
+Writing a final reply proves storage. `acked` proves the transport claimed the original request.
+Neither proves that the requesting agent read the answer. `await` prints the final reply's full
+SHA-256 revision to stderr. After inspecting that answer (or terminal failure), its requester
+explicitly acknowledges it:
+
+```sh
+AGENT_BUS_NAME=<requester> agent-bus received <id> --revision <SHA>
+agent-bus delivered <id> --timeout 60
+```
+
+`received` checks the original envelope's `reply_to` and the current content revision, then writes
+`receipts/<id>.json` as `{id, revision, by, ts}`. It rejects missing envelopes, progress, wrong
+endpoints and stale revisions. The digest covers `[id, ok, kind, pending, text]` as JSON, with
+missing `pending` coerced to false; timestamps are excluded. Replacing a final answer invalidates
+its old receipt, even when it has the same message id. An identical retry preserves the revision.
+`delivered` and `reply --wait-received` return **0** only for the current revision's receipt, and
+**2** on timeout, leaving the answer intact. Resume `delivered`, never rerun the request. Receipt
+means the local requester declared it read that version; it does not prove human reading.
+
+Each new reply revision also sends a deduplicated `type: status, expects_reply: false` notification
+to the original requester with `in_reply_to: <id>`. Final notifications begin `[agent-bus:reply]`,
+progress begins `[agent-bus:progress]`. They notify the requester to read the stored reply; they do
+not rerun the task. Identical concurrent retries send one notification. Failed notifications leave
+the reply intact and report a warning; they do not stop the background server.
+
+A Claude inbox notification needs its session's `wait <endpoint>` armed and re-armed after each
+message. An idle Claude session without a listener cannot be awakened by a mailbox file. Until
+`delivered` succeeds, report **stored, receipt unconfirmed**, rather than promising automatic
+delivery. A Codex chat notification uses the existing direct queue route. After a crash, a leftover
+`.notifying` lock can suppress notifications; a leftover `.replying` lock refuses writes; read the answer with `await` and confirm it with
+`received` before deciding whether to remove that lock. Recovery does not require resending work.
 
 ## Limits
 

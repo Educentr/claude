@@ -12,9 +12,11 @@
 //   send  <to> [text|-] [opts]        queue a message, print its id
 //   ask   <to> [text|-] [opts]        send and wait for the reply      (exit 2: no reply yet)
 //   await <id>                        keep waiting for a reply          (exit 4: the run failed)
-//   acked <id>                        wait for the read receipt
+//   acked <id>                        wait for the transport claim receipt
 //   wait  <me>                        claim the next message for <me>, print it as JSON
-//   reply <id> [text|-]               answer a message
+//   reply <id> [text|-] [--pending] [--wait-received]  answer or report progress
+//   received <id> --revision SHA      acknowledge the exact reply the agent read
+//   delivered <id>                    wait for that acknowledgement (exit 2: not read)
 //   recover <me> [--requeue <id>]     list claimed-but-unanswered messages; put one back
 //   unlock <endpoint> [--force]       remove the lock a dead server left behind
 //   serve-codex [--endpoint codex] [--cd DIR] [--policy FILE] [--exec-timeout S] [--max-rounds N]
@@ -82,6 +84,7 @@ const opts = {
   detach: has('detach'), link: has('link'), agentsMd: has('agents-md'), uninstall: has('uninstall'), force: has('force'),
   thread: flag('thread'), headless: has('headless'), maxRuns: flag('max-runs'), codexConfig: has('codex-config'),
   mode: flag('mode'), file: flag('file'), clear: has('clear'),
+  pending: has('pending'), waitReceived: has('wait-received'), revision: flag('revision'),
 };
 const [cmd, a, ...rest] = argv;
 
@@ -125,19 +128,21 @@ function envelope(to, body) {
   return msg;
 }
 
-function send(to, body, undelivered = () => {}, type = null) {
+function send(to, body, undelivered = () => {}, type = null, notification = null) {
   if (type) { opts.type = type; opts.noReply = true; }        // an agreement is told, not asked
-  if (depth >= MAX_DEPTH) die(`refused — message chain depth ${depth} reached the limit ${MAX_DEPTH}`, 3);
+  if (!notification && depth >= MAX_DEPTH) die(`refused — message chain depth ${depth} reached the limit ${MAX_DEPTH}`, 3);
   const live = liveRecord(to);
-  // Everything that can refuse the message is asked BEFORE anything is written: finding the open
-  // chats can itself fail (no lsof), and a half-written exchange is worse than none.
-  const open = live ? liveChats().some((c) => c.thread === live.thread) : false;
-  const msg = envelope(to, body);
+  const failed = (why) => { if (notification) return { error: why }; die(why, 6); };
+  // Discovery failure must not stop a server that already stored its answer.
+  let open = false;
+  try { open = live ? liveChats(notification ? (why) => { throw new Error(why); } : die).some((c) => c.thread === live.thread) : false; }
+  catch (e) { if (notification) return failed(e.message); throw e; }
+  const msg = notification || envelope(to, body);
   if (!live) {
     atomic(path.join(dir('inbox', to), `${msg.id}.json`), JSON.stringify(msg));
     return msg.id;
   }
-  if (!open) { undelivered(); die(`not delivered to "${to}": Codex chat ${live.thread} is not open any more — open the channel again: agent-bus connect ${to}`, 6); }
+  if (!open) { undelivered(); return failed(`not delivered to "${to}": Codex chat ${live.thread} is not open any more — open the channel again: agent-bus connect ${to}`); }
   // A message for a chat is NEVER put in the inbox. A listener polling the same endpoint would
   // take it from there and run it as well — the request would be answered twice, by two agents.
   // It goes straight to claimed, which only `recover` reads.
@@ -147,12 +152,12 @@ function send(to, body, undelivered = () => {}, type = null) {
   if (fail?.certain) {
     fs.unlinkSync(held);                 // it never reached Codex: nothing can run, nothing is left over
     undelivered();
-    die(`not delivered to "${to}": ${fail.why} — open the channel again: agent-bus connect ${to}`, 6);
+    return failed(`not delivered to "${to}": ${fail.why} — open the channel again: agent-bus connect ${to}`);
   }
   if (fail) {
     // A queue that timed out may still have been written. Deleting the message would claim a
     // certainty nobody has, so it stays in claimed/ where `recover` lists it.
-    die(`${msg.id}: ${fail.why} — it may or may not be in Codex chat ${live.thread}. Look at that chat before sending it again; agent-bus recover ${to} lists it.`, 6);
+    return failed(`${msg.id}: ${fail.why} — it may or may not be in Codex chat ${live.thread}. Look at that chat before sending it again; agent-bus recover ${to} lists it.`);
   }
   atomic(ackFile(msg.id), JSON.stringify({ by: `${to} (queued into Codex chat ${live.thread})`, ts: new Date().toISOString() }));
   return msg.id;
@@ -172,11 +177,18 @@ function readReply(id) {
 
 function awaitReply(id) {
   name(id, 'message id');
-  let acked = false;
+  let acked = false, progress = '';
   for (const end = Date.now() + timeoutS * 1000; Date.now() < end; sleep(1000)) {
     if (!acked && fs.existsSync(ackFile(id))) { process.stderr.write(`agent-bus: ${ackLine(id)}\n`); acked = true; }
     const r = readReply(id);
     if (!r) continue;
+    if (r.pending) {
+      const rev = replyRevision(id, r);
+      if (rev !== progress) { process.stderr.write(`agent-bus: ${id} pending: ${r.text}\n`); progress = rev; }
+      continue;
+    }
+    const revision = replyRevision(id, r);
+    process.stderr.write(`agent-bus: reply ${id} revision ${revision}; after reading: agent-bus received ${id} --revision ${revision} --from <your-endpoint>\n`);
     if (!r.ok) die(`${id} failed (${r.kind}): ${r.text}`, 4);
     return r.text.endsWith('\n') ? r.text : `${r.text}\n`;
   }
@@ -222,10 +234,97 @@ function sized(id, r) {
   return { ok: false, kind: 'reply_too_large', text: `the reply is ${size} bytes, the limit is ${MAX_REPLY}; the whole of it is in ${full}` };
 }
 
+// A transport claim does not prove that an agent read an answer. Bind receipts
+// to content so an updated answer cannot inherit a receipt for its old version.
+const replyRevision = (id, r) => createHash('sha256').update(JSON.stringify([id, r.ok, r.kind, !!r.pending, r.text])).digest('hex');
+const receiptFile = (id) => path.join(dir('receipts'), `${name(id, 'message id')}.json`);
+function requestFor(id) {
+  // A claim may move inbox -> claimed while this lookup is in progress.
+  for (const stage of ['claimed', 'inbox', 'claimed']) {
+    const root = dir(stage);
+    for (const endpoint of fs.readdirSync(root).filter((s) => NAME.test(s))) {
+      const file = path.join(root, endpoint, `${id}.json`);
+      try { return readJson(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    }
+  }
+  return null;
+}
+function received(id) {
+  name(id, 'message id'); name(from, 'reader (--from / $AGENT_BUS_NAME)');
+  if (from === 'unknown') die('received needs your endpoint via --from or AGENT_BUS_NAME');
+  if (!/^[0-9a-f]{64}$/.test(opts.revision || '')) die('received needs --revision with the full SHA printed by await');
+  const r = readReply(id);
+  if (!r || r.pending) die(`${id} has no final reply to acknowledge`);
+  if (replyRevision(id, r) !== opts.revision) die(`${id} reply changed — read it again with: agent-bus await ${id}`);
+  const req = requestFor(id);
+  if (!req) die(`${id} has no request envelope — cannot verify its reader`);
+  if (req.reply_to !== from) die(`${id} belongs to reader ${req.reply_to}, not ${from}`);
+  atomic(receiptFile(id), JSON.stringify({ id, revision: opts.revision, by: from, ts: new Date().toISOString() }));
+  return `${id} read by ${from}, revision ${opts.revision}\n`;
+}
+function awaitReceipt(id) {
+  name(id, 'message id');
+  for (const end = Date.now() + timeoutS * 1000; Date.now() < end; sleep(1000)) {
+    const r = readReply(id);
+    if (!r || r.pending || !fs.existsSync(receiptFile(id))) continue;
+    const receipt = readJson(receiptFile(id));
+    const req = requestFor(id);
+    if (req && receipt.by === req.reply_to && receipt.revision === replyRevision(id, r)) return `${id} read by ${receipt.by}, revision ${receipt.revision}\n`;
+  }
+  die(`${id}: no acknowledgement of the current final reply after ${timeoutS}s — stored is not read; resume with: agent-bus delivered ${id}`, 2);
+}
+function notifyReply(id, r) {
+  const req = requestFor(id);
+  if (!req || req.expects_reply === false || !NAME.test(req.reply_to || '') || !NAME.test(req.to || '')) return;
+  const revision = replyRevision(id, r);
+  const noticeId = `reply-${createHash('sha256').update(`${id}:${revision}`).digest('hex').slice(0, 32)}`;
+  for (const stage of ['inbox', 'claimed']) {
+    if (fs.existsSync(path.join(dir(stage, req.reply_to), `${noticeId}.json`))) return;
+  }
+  const text = r.pending
+    ? `[agent-bus:progress] ${id}: ${r.text.slice(0, 500)}. The request is still pending; await the same id, never resend.`
+    : `[agent-bus:reply] Reply to ${id} is available (revision ${revision}). Read it with agent-bus await ${id}, then acknowledge that revision with agent-bus received ${id} --revision ${revision} --from ${req.reply_to}.`;
+  const msg = { version: VERSION, id: noticeId, type: 'status', from: req.to, to: req.reply_to,
+    reply_to: req.to, conversation_id: req.conversation_id, in_reply_to: id,
+    expects_reply: false, depth: req.depth || 0, ts: new Date().toISOString(), text };
+  // Serialise identical notifications so concurrent retries cannot queue one twice.
+  const lock = path.join(dir('locks'), `${noticeId}.notifying`);
+  try { fs.mkdirSync(lock); } catch (e) { if (e.code === 'EEXIST') return; throw e; }
+  try {
+    for (const stage of ['inbox', 'claimed']) {
+      if (fs.existsSync(path.join(dir(stage, req.reply_to), `${noticeId}.json`))) return;
+    }
+    const sent = send(req.reply_to, text, () => {}, null, msg);
+    if (sent.error) process.stderr.write(`agent-bus: reply ${id} stored, notification failed: ${sent.error}\n`);
+  } finally { fs.rmdirSync(lock); }
+}
+// Progress and final writes must be ordered: a concurrent late progress writer
+// cannot pass the guard before another process stores the final answer.
+function writingReply(id, write) {
+  const lock = path.join(dir('locks'), `${id}.replying`);
+  for (const end = Date.now() + 5000;; sleep(20)) {
+    try { fs.mkdirSync(lock); break; }
+    catch (e) { if (e.code !== 'EEXIST') throw e; }
+    if (Date.now() >= end) die(`${id}: another reply writer holds ${lock} — inspect it before retrying`);
+  }
+  let released = false;
+  const clean = () => { if (!released) { released = true; fs.rmdirSync(lock); } };
+  process.once('exit', clean);
+  try { return write(); } finally { clean(); process.off('exit', clean); }
+}
 function reply(id, body, ok = true, kind = 'reply') {
   name(id, 'message id');
-  const r = sized(id, { ok, kind, text: body });
-  atomic(path.join(dir('replies'), `${id}.json`), JSON.stringify({ id, ok: r.ok, kind: r.kind, ts: new Date().toISOString(), text: r.text }));
+  const pending = cmd === 'reply' && opts.pending;
+  if (pending && opts.waitReceived) die('--pending cannot be combined with --wait-received');
+  const r = writingReply(id, () => {
+    const previous = readReply(id);
+    if (pending && previous && !previous.pending) die(`${id} already has a final reply — progress cannot replace it`);
+    const result = sized(id, { ok, kind: pending ? 'progress' : kind, text: body, pending });
+    atomic(path.join(dir('replies'), `${id}.json`), JSON.stringify({ id, ...result, revision: replyRevision(id, result), ts: new Date().toISOString() }));
+    return result;
+  });
+  notifyReply(id, r);
+  if (cmd === 'reply') process.stderr.write(`agent-bus: ${id} ${r.pending ? 'pending (wait continues)' : 'stored (not yet acknowledged)'}; check with: agent-bus delivered ${id}\n`);
 }
 
 function recover(me) {
@@ -246,7 +345,8 @@ function recover(me) {
   if (chatPeer) console.log(`"${me}" is Codex chat ${chatPeer.thread}: these were delivered to it and not answered yet — which is what an unanswered question looks like while somebody is still thinking.`);
   for (const f of fs.readdirSync(held).sort()) {
     const m = readJson(path.join(held, f));
-    if (m.expects_reply !== false && !readReply(m.id)) console.log(`${m.id}\t${m.type ?? 'question'}\tfrom ${m.from}\t${m.ts}`);
+    const answer = readReply(m.id);
+    if (m.expects_reply !== false && (!answer || answer.pending)) console.log(`${m.id}\t${m.type ?? 'question'}\tfrom ${m.from}\t${m.ts}`);
   }
 }
 
@@ -302,18 +402,18 @@ function liveRecord(to) {
 const codexHome = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 
 // pid -> {pid, cwd, threads: Map(thread -> rollout file or null)}
-function liveHolders() {
+function liveHolders(refuse = die) {
   const holders = new Map();
   const scan = (where, idOf) => {
     if (!fs.existsSync(where)) return;
     // +D walks the tree; -F gives one field per line (p<pid>, n<name>), which no path can confuse.
     const r = spawnSync('lsof', ['-F', 'pn', '+D', where], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
-    if (r.error) die(`lsof is needed to tell which Codex chats are open, and it could not be run (${r.error.code ?? r.error.message}) — start the peer in the background instead: agent-bus connect <peer> --headless`);
+    if (r.error) refuse(`lsof is needed to tell which Codex chats are open, and it could not be run (${r.error.code ?? r.error.message}) — start the peer in the background instead: agent-bus connect <peer> --headless`);
     // lsof exits 1 for "found nothing" as much as for "could not read that", so the status settles
     // nothing; what it wrote, and whether it was killed, do. An empty list has to mean "there are
     // none" — an incomplete walk must never pass for an absence.
-    if (r.signal || r.status === null) die(`lsof was killed (${r.signal ?? 'no exit status'}) before it could say which Codex chats are open — nothing was concluded from that. Try again, name the chat with --thread, or start the peer in the background: agent-bus connect <peer> --headless`);
-    if (r.stderr.trim()) die(`lsof could not read all of ${where}, so an open Codex chat may have been missed:\n${r.stderr.trim()}\nFix that, name the chat with --thread, or start the peer in the background: agent-bus connect <peer> --headless`);
+    if (r.signal || r.status === null) refuse(`lsof was killed (${r.signal ?? 'no exit status'}) before it could say which Codex chats are open — nothing was concluded from that. Try again, name the chat with --thread, or start the peer in the background: agent-bus connect <peer> --headless`);
+    if (r.stderr.trim()) refuse(`lsof could not read all of ${where}, so an open Codex chat may have been missed:\n${r.stderr.trim()}\nFix that, name the chat with --thread, or start the peer in the background: agent-bus connect <peer> --headless`);
     let pid = null;
     for (const line of r.stdout.split('\n')) {
       if (line[0] === 'p') pid = Number(line.slice(1));
@@ -339,7 +439,7 @@ function liveHolders() {
     const line = (r.stdout ?? '').split('\n').filter((l) => l[0] === 'n').pop();
     if (line) { held.cwd = line.slice(1); continue; }
     if (alive(pid) === false) { holders.delete(pid); continue; }      // it exited while we were looking
-    die(`could not tell which directory the open Codex session pid ${pid} is working in${r.stderr?.trim() ? ` (${r.stderr.trim().split('\n')[0]})` : ''} — an open chat may have been missed, so nothing was concluded. Fix that (every lookup here goes through lsof, --thread included), or start the peer in the background: agent-bus connect <peer> --headless`);
+    refuse(`could not tell which directory the open Codex session pid ${pid} is working in${r.stderr?.trim() ? ` (${r.stderr.trim().split('\n')[0]})` : ''} — an open chat may have been missed, so nothing was concluded. Fix that (every lookup here goes through lsof, --thread included), or start the peer in the background: agent-bus connect <peer> --headless`);
   }
   return [...holders.values()];
 }
@@ -371,8 +471,8 @@ function threadRows(ids) {
 // least one thread nobody can identify and no chat of their own; the rest — subagents, exec runs —
 // are simply not chats. `read` says whether the thread store could be consulted, which is what
 // tells "nothing has been said there yet" apart from "I could not find out".
-function discover() {
-  const holders = liveHolders();
+function discover(refuse = die) {
+  const holders = liveHolders(refuse);
   const { rows, read } = threadRows(holders.flatMap((h) => [...h.threads.keys()]));
   const chats = [];
   const waiting = [];
@@ -396,7 +496,7 @@ function discover() {
   return { chats, waiting, read };
 }
 
-const liveChats = () => discover().chats;
+const liveChats = (refuse = die) => discover(refuse).chats;
 
 // What the person would recognise an older chat by, when the thread store has no title for it:
 // the last thing they typed in it. Their own turns
@@ -1106,6 +1206,7 @@ async function serveCodex() {
 function doctor() {
   const line = (ok, what) => console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`);
   line(Number(process.versions.node.split('.')[0]) >= 18, `node ${process.versions.node} (18 or newer)`);
+  line(true, 'reply protocol: pending progress + revision-bound received/delivered (both peers need this CLI)');
   line(true, `mailbox ${mailbox()} — private, yours`);
   const locks = path.join(BUS, 'locks');
   for (const f of fs.existsSync(locks) ? fs.readdirSync(locks).filter((x) => x.endsWith('.pid')) : []) {
@@ -1145,7 +1246,14 @@ switch (cmd) {
     console.log(JSON.stringify(m));
     break;
   }
-  case 'reply': reply(a ?? die('usage: reply <id> [text|-]'), text(rest)); break;
+  case 'reply': {
+    const id = a ?? die('usage: reply <id> [text|-] [--pending] [--wait-received]');
+    reply(id, text(rest));
+    if (opts.waitReceived) process.stdout.write(awaitReceipt(id));
+    break;
+  }
+  case 'received': process.stdout.write(received(a ?? die('usage: received <id> --revision SHA'))); break;
+  case 'delivered': process.stdout.write(awaitReceipt(a ?? die('usage: delivered <id>'))); break;
   case 'recover': recover(a ?? die('usage: recover <me> [--requeue <id>]')); break;
   case 'unlock': unlock(a ?? die('usage: unlock <endpoint>')); break;
   case 'serve-codex': {
@@ -1162,5 +1270,5 @@ switch (cmd) {
   case 'stop': stop(a ?? 'codex').catch(fatal); break;
   case 'install': install(); break;
   case 'doctor': doctor(); break;
-  default: die('usage: agent-bus connect|disconnect|chats|mode|send|ask|await|acked|wait|reply|recover|unlock|serve-codex|stop|install|doctor … (see the header of this file)');
+  default: die('usage: agent-bus connect|disconnect|chats|mode|send|ask|await|acked|wait|reply|received|delivered|recover|unlock|serve-codex|stop|install|doctor … (see the header of this file)');
 }
