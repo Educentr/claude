@@ -1,6 +1,6 @@
 # Complete YAML Configuration Schema
 
-Full reference for all go-project-starter config fields.
+Configuration reference targeting **v0.31.0**. For version boundaries, migration and examples, read [v0.30–v0.31 guidance](releases-v0.30-v0.31.md). Defaults below follow the tagged implementation (`internal/pkg/config/structs.go`), which can differ from older upstream documentation.
 
 ## A note on `path:` fields
 
@@ -10,7 +10,7 @@ Every `path:` field in this schema (`rest.path`, `grpc.path`, `jsonschema.path`,
 ./local.yaml                                                       # local file
 https://host/file.yaml[?token_env=NAME]                            # HTTPS download
 git+ssh://git@host/org/repo.git@<ref>#<sub>                        # git over SSH
-git+https://host/org/repo.git@<ref>#<sub>[?token_env=NAME]         # git over HTTPS
+git+https://host/org/repo.git@<ref>?token_env=NAME#<sub>         # git over HTTPS
 ```
 
 `<ref>` = branch/tag/SHA (defaults to `HEAD`); `<sub>` = file path inside the repo (required for git, single file only). `?token_env=NAME` (HTTPS only) names an env var holding the token — never write the token in YAML. RFC 3986 order: query before fragment.
@@ -39,22 +39,29 @@ git:
   repo: string              # Required. Git repository URL
   module_path: string       # Required. Go module path (e.g., github.com/org/repo)
   private_repos: string     # Comma-separated GOPRIVATE patterns (e.g., "github.com/myorg/*")
+  private_repos_token_secret: string # GitHub Actions secret name; default GH_PAT
 ```
 
 ## tools (all optional)
 
 ```yaml
 tools:
-  golang_version: string         # Default: "1.24"
+  golang_version: string         # Default: "1.27"
   protobuf_version: string       # Default: "1.7.0"
-  ogen_version: string           # Default: "v1.20.2"
+  ogen_version: string           # Default: "v1.20.1"
   argen_version: string          # Default: "v3.1.22". Required if use_active_record: true
-  golangci_version: string       # Default: "2.0.2"
+  golangci_version: string       # Default: "2.1.6"
   go_jsonschema_version: string  # Default: "v0.16.0"
   runtime_version: string        # Auto-set to MinRuntimeVersion
-  goat_version: string           # Required when goat_tests enabled. E.g. "v0.5.0". Populates GOATVERSION in Makefile.
-  goat_services_version: string  # Required when goat_tests enabled. E.g. "v0.2.2". Populates GOATSERVICESVERSION in Makefile.
+  goat_version: string           # Auto-set to compatible minimum when omitted; preserve explicit pin
+  goat_services_version: string  # Auto-set to compatible minimum when omitted; preserve explicit pin
   buf_version: string            # For gRPC buf generation
+  starter_version: string        # Auto-recorded generator pin; config fallback for unidentified local builds
+  lint_exclude_paths: [string]   # Regex exclusions for generated lint config
+  lint_config:                  # Optional; own and overrides are mutually exclusive
+    own: bool                   # Project owns configs/golangci-lint.yml
+    # OR:
+    overrides: string           # Local/remote YAML overlay, resolved at generation time
 ```
 
 ## rest[] (REST API transports)
@@ -72,9 +79,10 @@ rest:
     public_service: bool      # Default: false. If true, no auth required
     generator_params:         # Optional. Generator-specific params
       auth_handler: string    # For ogen: "on" or "off"
+      auth_scheme: string     # For ogen: "bearer" selects HandleBearerAuth/BearerAuth stub
     auth_params:              # For ogen_client only
       transport: string       # "header"
-      type: string            # "apikey" or "bearer"
+      type: string            # "apikey", "bearer", "basic" (BasicAuth scheme required)
     instantiation: string     # For ogen_client only. "static" (default) or "dynamic"
     rewrite_refs: bool        # Default: false. Rewrite cross-directory $ref (../common/foo.yml) into local sibling refs (./foo.yml) after CopySpecs. See main SKILL "Cross-Directory $ref Rewriting" section.
 ```
@@ -250,6 +258,9 @@ Rules:
 - Command can have `subcommands` OR be a leaf command (not both)
 - Flags on leaf commands and subcommands
 - Types: `string`, `int`, `bool`, `float64`, `duration`
+- Names match `[a-zA-Z][a-zA-Z0-9_-]*`; typed defaults must parse as the flag type (strict since v0.31)
+- Generated Command/Subcommand expose Flags and Usage; help functions are PrintCommandHelp/PrintSubcommandHelp
+- Migrate/remove obsolete `psg_handler_test.go`, preserving custom tests
 
 ## jsonschema[] (JSON Schema code generation)
 
@@ -337,8 +348,18 @@ grafana:
       type: string            # Required. "prometheus" or "loki"
       access: string          # "proxy" or "direct"
       url: string             # Required. Datasource URL
+      uid: string               # Optional. Default ds-<lowercase name>; 1–40 [A-Za-z0-9_-], globally unique
       isDefault: bool         # Only one can be default
       editable: bool          # Allow editing in Grafana UI
+  annotations:
+    - name: string              # Required. Unique annotation name
+      tags: [string]            # Required. Nonempty list, or comma-separated string
+      icon_color: string        # Default yellow
+      datasource: string        # Only grafana (default)
+      match_any: bool           # Default false (AND tags)
+      hide: bool                # Default false
+      enable: bool              # Default true
+      limit: int                # Default 100
 ```
 
 ## artifacts
@@ -394,7 +415,16 @@ deploy:
 ```yaml
 docker:
   image_prefix: string        # Default: "educentr"
+  build_args:
+    - IMAGE_VERSION           # Short form; stages default to [final]
+    - name: IMAGE_REVISION
+      default: $(shell git rev-parse HEAD)
+      stages: [builder, final]
+  labels:
+    org.opencontainers.image.version: ${IMAGE_VERSION}
 ```
+
+Names must be valid ARG identifiers and not reserved by generated Dockerfile/Makefile. Label references require an argument declared in the final stage; keys are lowercase. See [Docker guidance](releases-v0.30-v0.31.md#docker-and-grafana).
 
 ## post_generate
 
@@ -410,3 +440,51 @@ post_generate:                # List of post-generation steps
 ```
 
 Note: No defaults — users must explicitly specify steps. Empty array `[]` means no post-generation.
+
+## metrics / onlineconf
+
+```yaml
+metrics:
+  path: string                # Optional metrics map, local or remote URI; opt-in
+onlineconf:
+  path: string                # Optional service key map, local or remote URI
+```
+
+Both maps are read at generation time, not copied into the project. Metrics produces collectors, canonical panels and `metrics-validate` only when configured. In v0.31 built-in `occonf` accessors, required-key startup checks, registry and `onlineconf-validate` are generated even without a service map. See [map formats and accessor rules](releases-v0.30-v0.31.md).
+
+## generator[] / contract[]
+
+```yaml
+generator:
+  - name: string              # Required; ^[a-z0-9_-]+$, unique, not a built-in target
+    install: string           # Optional tool installation command; no template variables
+    cmd: string               # Required; supports {{ .Spec }} and {{ .Target }} only
+    lint: string              # Optional; same variables as cmd
+contract:
+  - path: string              # Required; local or remote URI
+    copy: string              # Required; clean relative project destination, unique
+    target: string            # Optional output path; required if command uses .Target
+    generator_name: string    # Required; must reference generator[].name
+```
+
+Do not overload rest/jsonschema to run an unrelated generator. See [custom generator constraints and targets](releases-v0.30-v0.31.md#custom-generators-and-contracts-v031).
+
+## github_ci
+
+```yaml
+github_ci:
+  runs_on: ubuntu-latest      # Also accepts [labels] or {group: ..., labels: [...]}
+  job_timeout_minutes: 30     # Optional positive integer, applied to every job
+  doctl: install              # install (default) or image (DigitalOcean only)
+  doctl_version: 1.170.0      # Optional; incompatible with doctl: image
+  checks:
+    - name: lint              # Unique check name; each check requires run
+      run: make lint
+      registry_login: false  # Default false
+    - name: onlineconf
+      run: make onlineconf-validate
+  checks_config:
+    fail_fast: false          # Default false
+```
+
+Checks are opt-in. Build/build-packages wait for all declared checks. Run metrics-validate when a metrics map is configured; use onlineconf-validate for current generated projects. For runner/secret/doctl validation see [CI guidance](releases-v0.30-v0.31.md#github-ci-and-private-modules).

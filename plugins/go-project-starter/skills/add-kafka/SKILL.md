@@ -7,6 +7,12 @@ description: "Add Kafka producer or consumer to an existing Go project generated
 
 Interactive command to add Kafka producer or consumer to an existing go-project-starter project.
 
+## Generator version
+
+These instructions cover **go-project-starter v0.31.0**. Read the existing `tools.starter_version` / Makefile `GPSVERSION` before regeneration; preserve the project pin unless upgrading is part of the task. Read [v0.30–v0.31 changes](../go-project-starter/references/releases-v0.30-v0.31.md) when upgrading or using metrics/OnlineConf contracts, custom generators, CI checks, lint overrides, Docker metadata or Grafana annotations. It includes manifest conflict recovery and generated-code migrations.
+
+In v0.31, keep `.project-config/meta.yaml` with the generated tree, edit specs at their source, and use generated `occonf` accessors for runtime configuration. Run applicable `make onlineconf-validate` / `make metrics-validate` gates after generation.
+
 ## Mandatory Steps
 
 The task is NOT complete until ALL of these pass:

@@ -2,6 +2,12 @@
 
 OnlineConf is the runtime configuration system used by generated projects. All config is read at runtime, not embedded at build time.
 
+## v0.31 accessor boundary
+
+Use the generated `internal/pkg/occonf/` package and `configs/onlineconf-tree.yaml` as the authoritative runtime API and path inventory. They cover the generator's keys in every project; `onlineconf.path` adds the service's own declarations. Direct OnlineConf reads outside that package fail `make onlineconf-validate`, including manual sections of generated files.
+
+For service settings, declare keys and defaults in the source map, regenerate, and call the resulting typed accessors. Read [OnlineConf maps](releases-v0.30-v0.31.md#onlineconf-accessors-v031) for schema and return shapes. The paths below explain configuration values; they are not a reason to assemble path strings in application code. For logging, respect the caller's prefix; the v0.31 fix removes the need to duplicate the service name.
+
 ## Path Convention
 
 ```
@@ -94,6 +100,8 @@ Default topic name = event name. Override per environment:
 /myapp/kafka/main_kafka/events/user_events/topic = "prod_user_events"
 ```
 
+HTTP Basic clients additionally use `/{service}/transport/rest/{name}_{version}/auth_params/username` and `/password`. Both keys must exist, username must be nonempty, and the OpenAPI scheme must be named `BasicAuth`.
+
 ## Worker Paths
 
 ### Telegram Bot
@@ -105,9 +113,14 @@ Default topic name = event name. Override per environment:
 
 ### Daemon
 
+For custom scheduling, declare service keys (e.g. tasks/enabled and tasks/interval) in the service map. Built-in daemon keys are:
+
 ```
-/{service}/worker/daemon/{name}/enabled               # true/false (workers MUST be disabled by default!)
-/{service}/worker/daemon/{name}/interval              # Execution interval (e.g., "30s", "5m")
+/{service}/worker/{name}/jobs/enabled                # Names of enabled jobs; empty = disabled
+/{service}/worker/{name}/batch_size                  # Per-iteration batch
+/{service}/worker/{name}/max_workers                 # Concurrency
+/{service}/worker/{name}/default/timeout             # Default job timeout
+/{service}/worker/{name}/job/timeout                 # Override job timeout
 ```
 
 ### Queue
@@ -159,10 +172,14 @@ OC_{SERVICE}__{path}__segments → value
 
 ### Worker Best Practice
 
-Always check enabled flag first in `GetTasks()`:
+Declare a boolean service key with `default: false` and use its generated accessor in `GetTasks()`:
 
 ```go
-enabled, _ := onlineconf.GetBool(ctx, GetConfigPath("enabled"), false)
+// Map declares /<service>/tasks/enabled, type bool, default false.
+enabled, err := occonf.TasksEnabled(ctx)
+if err != nil {
+    return nil, nil, err
+}
 if !enabled {
     return nil, nil, nil
 }
@@ -182,8 +199,8 @@ make onlineconf-update-tests && make generate-test-env-api
 
 For reading config in tests:
 ```go
-// Use helper function instead of direct OnlineConf access
-value := GetOnlineConfString("section", "key", "subkey")
+// Map declares /<service>/tasks/enabled; test config seeds the declared key.
+value, err := occonf.TasksEnabled(ctx)
 ```
 
 ## Dev Stand (docker-compose-dev.yaml)

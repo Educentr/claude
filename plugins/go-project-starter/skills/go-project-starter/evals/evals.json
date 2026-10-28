@@ -9,7 +9,7 @@
       "assertions": [
         {
           "name": "has_main_section",
-          "description": "Config has main section with name: order-service, logger, registry_type",
+          "description": "Config uses a valid Go identifier for main.name (orderservice or orderService), with logger and registry_type; git repo/module path may retain order-service",
           "type": "contains"
         },
         {
@@ -112,6 +112,98 @@
           "name": "driver_params",
           "description": "Bot application's driver has params like WithUpdatePoller()",
           "type": "contains"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Мы обновляем проект с v0.29 до v0.31. После установки нового бинаря make regenerate по-прежнему использует старую версию. В Telegram есть init() с cmdMaps[CmdHelp], а в GOAT init() присваивает testEnvInit. Дай порядок обновления и конкретные замены в коде.",
+      "expected_output": "Explains recorded generator pin and update-starter (or direct versioned bootstrap for an old Makefile), preserves manifest/custom code, migrates Telegram registration to Worker.customize/AddCommands and GOAT to SetTestEnvInitializer, checks selected Go toolchain and build/lint/tests. Does not claim migrate rewrites source.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "version_pin",
+          "description": "Uses make update-starter STARTER_VERSION=v0.31.0, or versioned direct bootstrap if target absent",
+          "type": "validation"
+        },
+        {
+          "name": "source_migration",
+          "description": "Uses Worker.customize/AddCommands and var _ = SetTestEnvInitializer instead of init",
+          "type": "validation"
+        },
+        {
+          "name": "preserves_project",
+          "description": "Keeps meta.yaml and explicit tools.golang_version unless an upgrade is intended",
+          "type": "validation"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "В проекте v0.31.0 нет onlineconf.path. Можно ли читать onlineconf.GetBool напрямую? Нужны tasks/enabled с default false и tasks/interval с default 30s, плюс метрика task_errors_total по reason. Покажи карты контрактов и использование.",
+      "expected_output": "Explains built-in occonf/gate exists even without a service map; declares service keys in one tree and metric CounterVec with reason label/help, links maps from project.yaml, uses typed accessors/collector and relevant gates.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "onlineconf_boundary",
+          "description": "Explains generated occonf and onlineconf-validate exist without onlineconf.path",
+          "type": "validation"
+        },
+        {
+          "name": "contract_shapes",
+          "description": "Declares bool/duration keys and a CounterVec metric with labels and help",
+          "type": "validation"
+        },
+        {
+          "name": "generated_api",
+          "description": "Uses generated accessors and metrics collectors, with error handling and dedicated gates",
+          "type": "validation"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "Регенерация v0.31 падает: я правил api/rest/external/v1/external.yaml, а ещё появился conflict на файл вне manifest. Как сохранить правки? Контракт по git+ssh://git@github.com/org/contracts.git@main#external.yaml. Хочу SOURCE_REF=feature/basic и HTTP Basic auth.",
+      "expected_output": "Preserves needed edits at source and restores/removes drifted copy; inspects/moves conflicting file without deleting manifest. Explains @main is an explicit pin not overridden by SOURCE_REF. Basic client requires auth_params header/basic, BasicAuth http/basic scheme, username/password keys.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "drift_recovery",
+          "description": "Preserves edits at source then restores/removes project copy; retains manifest and inspects collision",
+          "type": "validation"
+        },
+        {
+          "name": "explicit_pin",
+          "description": "States explicit @main wins over SOURCE_REF; unpinned URI needed for branch override",
+          "type": "validation"
+        },
+        {
+          "name": "basic_auth",
+          "description": "Uses BasicAuth scheme and header/basic auth_params, requires both credential keys and nonempty username",
+          "type": "validation"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "Добавь в project.yaml свои генераторы TypeScript для limits.yaml (install/cmd/lint), CI checks для lint и unit-tests, lint overrides из файла, OCI labels version/revision и Grafana annotation Deployments. Не патчи генерируемые Makefile/workflows.",
+      "expected_output": "Uses generator/contract with generator_name, copy and target, supported template variables; github_ci.checks; tools.lint_config.overrides; declared Docker build args in final stage for label references; Grafana annotations with tags. Explains required validation and source ownership.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "declarative_features",
+          "description": "Uses generator/contract, github_ci.checks, lint_config.overrides, docker build_args/labels, grafana.annotations",
+          "type": "validation"
+        },
+        {
+          "name": "custom_generator_contract",
+          "description": "Uses Spec/Target variables and clean relative copy/target paths, links generator_name",
+          "type": "validation"
+        },
+        {
+          "name": "preserves_generation",
+          "description": "Keeps generated files controlled by project.yaml and validates generation/build/gates",
+          "type": "validation"
         }
       ]
     }

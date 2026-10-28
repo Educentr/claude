@@ -8,7 +8,7 @@ Marketplace of Claude Code plugins for API development workflows.
 |--------|-------------|---------|
 | [agent-bus](./plugins/agent-bus) | Claude Code ↔ Codex: a channel into the Codex chat you have open (or a background one), agent-to-agent questions, round-based code review | 2.2.0 |
 | [api-tools](./plugins/api-tools) | Convert API documentation to OpenAPI specs | 1.0.0 |
-| [go-project-starter](./plugins/go-project-starter) | Generate Go microservices from YAML configs | 1.0.0 |
+| [go-project-starter](./plugins/go-project-starter) | Generate Go microservices from YAML configs | 1.7.0 |
 
 ### agent-bus
 
@@ -38,6 +38,8 @@ Skills included:
 
 Comprehensive skill set for the [go-project-starter](https://github.com/Educentr/go-project-starter) code generator. Helps compose YAML configs, generate production-ready Go microservices, and manage project lifecycle.
 
+Updated for generator **v0.31.0**, including **v0.30.0** features and migrations. See the [version and migration reference](plugins/go-project-starter/skills/go-project-starter/references/releases-v0.30-v0.31.md).
+
 **Reference skill:**
 
 - **go-project-starter** — Full config reference, validation rules, real-world patterns, troubleshooting. Auto-triggers on go-project-starter related questions.
@@ -58,6 +60,7 @@ Comprehensive skill set for the [go-project-starter](https://github.com/Educentr
 | `/add-grpc` | Add gRPC client transport |
 | `/add-telegram-bot` | Add Telegram bot worker |
 | `/add-kafka` | Add Kafka producer or consumer |
+| `/add-worker` | Add daemon or queue worker |
 | `/add-goat-test` | Add GOAT integration tests |
 
 Every command follows the same mandatory workflow: interview user, create/modify config, run `make regenerate`, run `make build`, verify no errors.

@@ -7,6 +7,12 @@ description: "Create a new Go REST API microservice from scratch using go-projec
 
 Interactive command to create a new Go REST API microservice from scratch.
 
+## Generator version
+
+Use **go-project-starter v0.31.0** for new projects (Go **1.27** by default). Bootstrap with the explicit version below; subsequent `make regenerate` uses the recorded generator pin. Read [v0.30–v0.31 changes](../go-project-starter/references/releases-v0.30-v0.31.md) when upgrading or using metrics/OnlineConf contracts, custom generators, CI checks, lint overrides, Docker metadata or Grafana annotations. It includes manifest conflict recovery and generated-code migrations.
+
+In v0.31, keep `.project-config/meta.yaml` with the generated tree, edit specs at their source, and use generated `occonf` accessors for runtime configuration. Run applicable `make onlineconf-validate` / `make metrics-validate` gates after generation.
+
 ## Mandatory Steps
 
 The task is NOT complete until ALL of these pass:
@@ -121,15 +127,14 @@ components:
 ## Step 3: Generate
 
 ```bash
-# Ensure go-project-starter is installed
-which go-project-starter || go install github.com/Educentr/go-project-starter/cmd/go-project-starter@latest
+# Bootstrap with the selected generator version
 
 # Place config in target's .project-config/
 mkdir -p {target_dir}/.project-config
 cp project.yaml *.swagger.yml {target_dir}/.project-config/
 
 # Generate
-go-project-starter --target={target_dir}
+go run github.com/Educentr/go-project-starter/cmd/go-project-starter@v0.31.0 --target={target_dir}
 ```
 
 If generation fails, read the error, fix config in `.project-config/`, and retry.

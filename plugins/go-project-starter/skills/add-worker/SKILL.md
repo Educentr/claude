@@ -7,6 +7,12 @@ description: "Add a background worker (daemon or queue) to an existing Go projec
 
 Interactive command to add a daemon or queue worker to an existing go-project-starter project.
 
+## Generator version
+
+These instructions cover **go-project-starter v0.31.0**. Read the existing `tools.starter_version` / Makefile `GPSVERSION` before regeneration; preserve the project pin unless upgrading is part of the task. Read [v0.30–v0.31 changes](../go-project-starter/references/releases-v0.30-v0.31.md) when upgrading or using metrics/OnlineConf contracts, custom generators, CI checks, lint overrides, Docker metadata or Grafana annotations. It includes manifest conflict recovery and generated-code migrations.
+
+In v0.31, keep `.project-config/meta.yaml` with the generated tree, edit specs at their source, and use generated `occonf` accessors for runtime configuration. Run applicable `make onlineconf-validate` / `make metrics-validate` gates after generation.
+
 ## Mandatory Steps
 
 The task is NOT complete until ALL of these pass:
@@ -130,16 +136,24 @@ Tell the user:
 ### Daemon-specific:
 
 - OnlineConf paths:
-  - `/{service}/worker/daemon/{name}/enabled` — true/false (DISABLED by default!)
-  - `/{service}/worker/daemon/{name}/interval` — execution interval (e.g., "30s", "5m")
+  - Read built-in worker keys/accessor signatures from generated `occonf` and `configs/onlineconf-tree.yaml` (e.g. `/{service}/worker/{name}/jobs/enabled`)
+  - Declare custom scheduling keys in `onlineconf.path`; example below uses `/tasks/enabled` (default false) and `/tasks/interval` (default 30s)
 - Implementation pattern:
   ```go
   func (w *Worker) GetTasks(ctx context.Context, lastJobState any) ([]daemon.ITask, any, error) {
-      enabled, _ := onlineconf.GetBool(ctx, GetConfigPath("enabled"), false)
+      // Declare /<service>/tasks/enabled: bool, default false in onlineconf.path.
+      enabled, err := occonf.TasksEnabled(ctx)
+      if err != nil {
+          return nil, lastJobState, err
+      }
       if !enabled {
           return nil, lastJobState, nil
       }
-      interval, _ := onlineconf.GetDuration(ctx, GetConfigPath("interval"), 30*time.Second)
+      // Declare /<service>/tasks/interval: duration, default 30s in the same map.
+      interval, err := occonf.TasksInterval(ctx)
+      if err != nil {
+          return nil, lastJobState, err
+      }
       // Check interval, return tasks
   }
   ```

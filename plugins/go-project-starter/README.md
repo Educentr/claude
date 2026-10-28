@@ -2,6 +2,14 @@
 
 Claude Code plugin for [go-project-starter](https://github.com/Educentr/go-project-starter) — генератор production-ready Go микросервисов из YAML конфигов.
 
+## Совместимость
+
+Инструкции обновлены для генератора **v0.31.0**, включая изменения **v0.30.0**. Новые проекты используют Go 1.27; при работе с существующим проектом сохраняется его явный пин генератора.
+
+Все 10 скилов учитывают закреплённую регенерацию (`make update-starter STARTER_VERSION=v0.31.0`), манифест файлов и защиту скопированных контрактов. Справочник включает карты метрик и OnlineConf, свои генераторы, CI checks, lint overrides, Docker build args/OCI labels, Grafana uid/annotations и REST Basic/Bearer auth. Для Telegram, GOAT и CLI описана миграция кода.
+
+Точные поля, ограничения и порядок обновления: [изменения v0.30–v0.31](skills/go-project-starter/references/releases-v0.30-v0.31.md). В коде тега v0.31.0 пакет `occonf` и валидатор генерируются даже без `onlineconf.path`; поле добавляет ключи сервиса.
+
 ## Что умеет
 
 - Составлять правильные YAML конфиги для генератора
@@ -37,6 +45,7 @@ Claude Code plugin for [go-project-starter](https://github.com/Educentr/go-proje
 | `/add-grpc` | Добавить gRPC клиент (static или dynamic instantiation) |
 | `/add-telegram-bot` | Добавить Telegram бот worker + driver (в отдельном контейнере или в существующем) |
 | `/add-kafka` | Добавить Kafka producer или consumer с опциональной типизацией через JSON Schema |
+| `/add-worker` | Добавить daemon или queue worker с контрактом |
 | `/add-goat-test` | Добавить GOAT интеграционные тесты с BaseTestSuite и HTTP клиентами |
 
 ### Справочный скилл
@@ -61,7 +70,8 @@ plugins/go-project-starter/
     ├── go-project-starter/           # Основной справочный скилл
     │   ├── SKILL.md                  # Конфиг-справочник, валидация, паттерны
     │   └── references/
-    │       ├── config-schema.md      # Полная YAML схема со всеми полями
+    │       ├── releases-v0.30-v0.31.md # Новые возможности и миграция
+│       ├── config-schema.md      # Полная YAML схема со всеми полями
     │       ├── recipes.md            # 10 продвинутых конфигов
     │       ├── troubleshooting.md    # Ошибки и решения
     │       └── onlineconf-paths.md   # Пути OnlineConf для runtime конфига
@@ -72,6 +82,7 @@ plugins/go-project-starter/
     ├── add-grpc/SKILL.md             # /add-grpc
     ├── add-telegram-bot/SKILL.md     # /add-telegram-bot
     ├── add-kafka/SKILL.md            # /add-kafka
+    ├── add-worker/SKILL.md          # /add-worker
     └── add-goat-test/SKILL.md        # /add-goat-test
 ```
 

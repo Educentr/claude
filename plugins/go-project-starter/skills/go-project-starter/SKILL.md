@@ -5,6 +5,10 @@ description: "Helps users compose YAML configurations for go-project-starter cod
 
 # go-project-starter
 
+## Generator version
+
+These instructions cover **go-project-starter v0.31.0**. Read the existing `tools.starter_version` / Makefile `GPSVERSION` before regeneration; preserve the project pin unless upgrading is part of the task. Read [v0.30–v0.31 changes](references/releases-v0.30-v0.31.md) when upgrading or using metrics/OnlineConf contracts, custom generators, CI checks, lint overrides, Docker metadata or Grafana annotations. It includes manifest conflict recovery and generated-code migrations.
+
 ## Overview
 
 go-project-starter is a **code generator** (not a running service). It takes YAML config + optional spec files (OpenAPI, protobuf, commands.yaml, queues.yaml) and generates a complete Go microservice project (~8000 lines, ~50 files).
@@ -26,7 +30,7 @@ rm -rf /tmp/gps-test-project && mkdir -p /tmp/gps-test-project/.project-config
 cp project.yaml *.swagger.yml /tmp/gps-test-project/.project-config/
 
 # 3. Run generator (reads config from .project-config/ inside target)
-go-project-starter --target=/tmp/gps-test-project
+go run github.com/Educentr/go-project-starter/cmd/go-project-starter@v0.31.0 --target=/tmp/gps-test-project
 
 # 4. If generation succeeds, try building
 cd /tmp/gps-test-project && make generate && make build
@@ -51,7 +55,7 @@ If generation or build fails, read the error, fix the config, and retry. Do NOT 
 
 Guide users through these steps:
 
-1. **Install:** `go install github.com/Educentr/go-project-starter/cmd/go-project-starter@latest`
+1. **Version:** `go-project-starter --version` (alias for `version` since v0.31). For new projects install the selected release: `go install github.com/Educentr/go-project-starter/cmd/go-project-starter@v0.31.0`
 2. **Init (optional):** `go-project-starter init --configDir=. --target=./myproject` — interactive wizard
 3. **Write config:** Create `project.yaml` in a config directory. Add spec files (OpenAPI, .proto, etc.) alongside it.
 4. **Preview:** `go-project-starter --configDir=./configs --target=./myproject --dry-run`
@@ -109,7 +113,7 @@ applications:
       - name: sys
 ```
 
-**CRITICAL:** Always include `tools_install`, `clean_imports`, and `executable_scripts` in `post_generate`. Without `clean_imports`, ogen_client generates files with unused self-imports causing `import cycle not allowed` build errors. Without `tools_install`, ogen and linter binaries won't be available.
+For a complete bootstrap, include `tools_install`, `clean_imports`, and `executable_scripts` in `post_generate`. These install tools, normalize imports and set script permissions. Authenticated ogen_client self-imports were fixed in v0.30; do not treat that old template defect as current behavior.
 
 The OpenAPI spec MUST include an `ErrorDefault` schema:
 ```yaml
@@ -255,18 +259,21 @@ For advanced multi-component configs (REST + Kafka + gRPC + workers), see `refer
 | `repo` | yes | Git repo URL |
 | `module_path` | yes | Go module path |
 | `private_repos` | no | Comma-separated GOPRIVATE patterns |
+| `private_repos_token_secret` | no | GitHub Actions secret name, default `GH_PAT` |
 
 ### tools (all optional, have defaults)
 | Field | Default |
 |-------|---------|
-| `golang_version` | 1.24 |
-| `ogen_version` | v1.20.2 |
+| `golang_version` | 1.27 |
+| `ogen_version` | v1.20.1 |
 | `argen_version` | v3.1.22 |
-| `golangci_version` | 2.0.2 |
+| `golangci_version` | 2.1.6 |
 | `protobuf_version` | 1.7.0 |
 | `go_jsonschema_version` | v0.16.0 |
 | `runtime_version` | auto |
-| `goat_version` | auto |
+| `goat_version` / `goat_services_version` | auto |
+| `starter_version` | generating binary version; fallback for unidentified local builds |
+| `lint_config` | optional `own: true` or `overrides: <URI>` (exclusive) |
 
 ### rest[]
 | Field | Required | Notes |
@@ -280,8 +287,8 @@ For advanced multi-component configs (REST + Kafka + gRPC + workers), see `refer
 | `api_prefix` | no | URL prefix |
 | `health_check_path` | no | Health endpoint path |
 | `public_service` | no | No auth required |
-| `generator_params` | no | For ogen: `auth_handler: "on"/"off"` |
-| `auth_params` | no | For ogen_client: `{transport: header, type: apikey}` |
+| `generator_params` | no | For ogen: `auth_handler: "on"/"off"`, `auth_scheme: bearer` for BearerAuth |
+| `auth_params` | no | For ogen_client: `{transport: header, type: apikey/bearer/basic}`; Basic requires scheme `BasicAuth` |
 | `instantiation` | no | `static`/`dynamic` (ogen_client only) |
 
 ### grpc[]
@@ -358,14 +365,20 @@ transport:
 ```
 
 ### Other sections
-- `post_generate`: `[git_install, tools_install, clean_imports, executable_scripts, call_generate, go_mod_tidy, go_get_u]`. **Required minimum for any project:** `git_install, tools_install, clean_imports, executable_scripts, call_generate, go_mod_tidy`. Omitting `clean_imports` causes build failures with ogen_client (import cycle errors). Omitting `tools_install` means ogen/linter binaries are missing.
+- `post_generate`: `[git_install, tools_install, clean_imports, executable_scripts, call_generate, go_mod_tidy, go_get_u]`. **Recommended bootstrap:** `git_install, tools_install, clean_imports, executable_scripts, call_generate, go_mod_tidy`. No post_generate defaults; `dev_stand` requires `git_install`. The current `clean-import` and `generate-jsonschema` targets install their tools before use.
 - `jsonschema[]`: `{name, schemas: [{id, path, type?}], package?}`
-- `grafana.datasources[]`: `{name, type: prometheus/loki, url, access: proxy/direct, isDefault, editable}`
+- `grafana.datasources[]`: `{name, type: prometheus/loki, url, access: proxy/direct, uid?, isDefault, editable}`; `grafana.annotations[]`: declared dashboard annotations
 - `artifacts`: `[docker, deb, rpm, apk]` (default: `[docker]`)
 - `packaging`: Required if deb/rpm/apk: `{maintainer, description, homepage?, license?, vendor?, install_dir?, config_dir?, upload?}`
 - `documentation`: `{type: s3/github_pages/minio, site_name?, headers?}`
 - `deploy.log_collector`: `{type: loki, parameters: {loki-url, loki-retries, loki-timeout}}`
-- `docker.image_prefix`: default `educentr`
+- `docker`: `image_prefix` (default `educentr`), `build_args`, `labels`
+- `metrics.path`: opt-in metrics map → collectors, panels, `make metrics-validate`
+- `onlineconf.path`: service key map → typed accessors; v0.31 always generates built-in `occonf` accessors and `make onlineconf-validate`
+- `generator[]` / `contract[]`: custom install/cmd/lint and copied specs linked by `generator_name`
+- `github_ci`: `runs_on`, `job_timeout_minutes`, `doctl_version`, `doctl: install/image`, `checks`, `checks_config`
+
+See [config-schema.md](references/config-schema.md) for field shapes and [release guidance](references/releases-v0.30-v0.31.md) for examples and constraints.
 
 ## Remote Spec Sources (since v0.24.0)
 
@@ -378,7 +391,7 @@ Every `path:` field — `rest.path`, `grpc.path`, `jsonschema.path` / `jsonschem
 | `./api.yaml`, `/abs/api.yaml` | local file (unchanged, default) |
 | `https://host/file.yaml[?token_env=NAME]` | direct download, optional `Authorization: Bearer ${NAME}` |
 | `git+ssh://git@host/org/repo.git@<ref>#<sub>` | git over SSH (uses ssh-agent / `~/.ssh/config`) |
-| `git+https://host/org/repo.git@<ref>#<sub>[?token_env=NAME]` | git over HTTPS, optional token |
+| `git+https://host/org/repo.git@<ref>?token_env=NAME#<sub>` | git over HTTPS, optional token |
 
 Rules:
 - `<ref>` = branch / tag / commit SHA. Omit (no `@`) → `HEAD`. **Pin a tag or SHA for reproducibility.**
@@ -445,7 +458,8 @@ worker:
 
 - REST/gRPC/JSON Schema specs are copied into `api/{rest|grpc|schema}/...` and committed alongside the generated project — **subsequent builds work offline**.
 - CLI / queue contracts are parsed and discarded (the generated Go types embed the contract).
-- Re-running `make regenerate` re-fetches the source — pulls newer revisions of mutable refs and verifies pinned ones.
+- Re-running `make regenerate` re-fetches the source. `SOURCE_REF` / `--sourceRef` / `GPS_SOURCE_REF` override only unpinned git sources (even explicit `@main` is a pin). See [branch selection](references/releases-v0.30-v0.31.md#contract-branch-override-v030).
+- Edit the original source, then regenerate: v0.31 rejects drift in copied specs against the manifest hash.
 
 Full reference: [`docs/configuration/remote-specs.md`](https://github.com/Educentr/go-project-starter/blob/main/docs/configuration/remote-specs.md) in the generator repo.
 
@@ -535,7 +549,10 @@ When user wants local development with OnlineConf:
 
 ## Regeneration
 
-- `--dry-run` previews changes without writing
+- `--dry-run` previews changes without writing, including manifest conflicts
+- `make regenerate` invokes the recorded version through `go run`; upgrade with `make update-starter STARTER_VERSION=v0.31.0`
+- Commit `.project-config/meta.yaml` (manifest v5); v0.31 rejects unowned destination collisions and locally edited copied specs
+- For recovery and Telegram/GOAT/CLI source migrations, read [release guidance](references/releases-v0.30-v0.31.md)
 - Code below disclaimer marker survives regeneration
 - When a component is removed from config, its generated files are auto-deleted IF there's no user code below the marker
 - If user code exists below marker in a removed component's files, generation errors out — user must manually migrate their code first
@@ -544,8 +561,8 @@ When user wants local development with OnlineConf:
 
 | Error | Fix |
 |-------|-----|
-| `import cycle not allowed` (ogen_client) | Add `tools_install` + `clean_imports` to `post_generate`, regenerate |
-| `does not contain package golangci-lint/v2` | Set `golangci_version: 2.0.2` in tools section |
+| Authenticated ogen_client self-import on old output | Fixed in v0.30; upgrade the generator pin and regenerate |
+| `does not contain package golangci-lint/v2` | Set a compatible v2 pin (default `2.1.6`) in tools section |
 | `Permission denied` (scripts) | Add `executable_scripts` to `post_generate`, regenerate |
 | `duplicate rest name: X` | Ensure unique name+version combinations |
 | `rest 'X' is not used in any application` | Add to an application's transport list |
@@ -577,11 +594,7 @@ These lessons come from production use of go-project-starter. They apply to any 
 
 - **NEVER modify `*_gen.go` files.** They are overwritten on regeneration. To customize behavior: use wrapper functions, override in manual code, or modify generator templates.
 - **Disclaimer markers divide generated vs manual code.** Code above the marker = regenerated. Code below = yours. All your customizations go below the marker.
-- **After template changes, reinstall the tool:**
-  ```bash
-  cd /path/to/go-project-starter && make local-install
-  ```
-  Then run `make regenerate` in your project. Without reinstalling, old templates are used.
+- **For local template development, rebuild and invoke the local generator directly** with `--target=<project>`. In v0.31 `make regenerate` uses the recorded version through `go run`; installing a binary in PATH does not override it.
 
 ### Contract-First Development
 
@@ -599,13 +612,7 @@ When `use_active_record: true`:
 
 ### Workers Best Practices
 
-- **All new workers MUST be DISABLED by default.** Add an `enabled` flag in OnlineConf and check it in `GetTasks()`:
-  ```go
-  enabled, _ := onlineconf.GetBool(ctx, GetConfigPath("enabled"), false)
-  if !enabled {
-      return nil, nil, nil
-  }
-  ```
+- **All new workers MUST be DISABLED by default.** Declare a service key with `type: bool`, `default: false` in the OnlineConf contract and check its generated `occonf` accessor in `GetTasks()`, propagating errors. Use a declared duration key for scheduling; read [OnlineConf guidance](references/releases-v0.30-v0.31.md#onlineconf-accessors-v031).
 - **Daemon jobs must be short.** Process in small batches (batch size from OnlineConf). Never create long-running tasks that process everything at once.
 
 ### OnlineConf Rules
@@ -613,7 +620,8 @@ When `use_active_record: true`:
 - **NEVER modify files in `etc/onlineconf/`** — production config is managed through the web UI.
 - **NEVER modify `*.cdb` files** — these are binary database files generated by `onlineconf-updater`.
 - **Only `tests/etc/onlineconf/TREE.conf`** can be edited for test configuration.
-- For runtime config in tests, use helper functions that read from test config files.
+- Runtime reads use `internal/pkg/occonf/` accessors; direct OnlineConf calls outside that package fail `make onlineconf-validate`. Declare service keys through `onlineconf.path`; built-in accessors exist even without a service map.
+- For runtime config in tests, seed declared keys in the test configuration and use the generated accessors.
 
 ### Testing with GOAT
 
@@ -818,12 +826,19 @@ Generated daemon provides the framework, you implement the logic:
 // worker.go (your code)
 func (w *Worker) GetTasks(ctx context.Context, lastJobState any) ([]daemon.ITask, any, error) {
     // 1. Check enabled flag
-    enabled, _ := onlineconf.GetBool(ctx, GetConfigPath("enabled"), false)
+    // Contract declares /<service>/tasks/enabled (bool, default false).
+    enabled, err := occonf.TasksEnabled(ctx)
+    if err != nil {
+        return nil, lastJobState, err
+    }
     if !enabled {
         return nil, lastJobState, nil
     }
-    // 2. Check interval
-    interval, _ := onlineconf.GetDuration(ctx, GetConfigPath("interval"), 30*time.Second)
+    // Contract declares /<service>/tasks/interval (duration, default 30s).
+    interval, err := occonf.TasksInterval(ctx)
+    if err != nil {
+        return nil, lastJobState, err
+    }
     if time.Since(state.LastRunTime) < interval {
         return nil, state, nil
     }
@@ -863,6 +878,8 @@ func (s *MyTestSuite) TestSomething() {
 ```
 
 ## Reference Files
+
+- **`references/releases-v0.30-v0.31.md`** — Version pinning, migration/recovery, new contract maps, custom generators, CI, lint, Docker and Grafana features. Read for upgrades and these configuration branches.
 
 Read these when you need deeper detail:
 

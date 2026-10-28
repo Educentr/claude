@@ -7,6 +7,12 @@ description: "Create a new Telegram bot Go microservice from scratch using go-pr
 
 Interactive command to create a new Telegram bot microservice from scratch.
 
+## Generator version
+
+Use **go-project-starter v0.31.0** for new projects (Go **1.27** by default). Bootstrap with the explicit version below; subsequent `make regenerate` uses the recorded generator pin. Read [v0.30–v0.31 changes](../go-project-starter/references/releases-v0.30-v0.31.md) when upgrading or using metrics/OnlineConf contracts, custom generators, CI checks, lint overrides, Docker metadata or Grafana annotations. It includes manifest conflict recovery and generated-code migrations.
+
+In v0.31, keep `.project-config/meta.yaml` with the generated tree, edit specs at their source, and use generated `occonf` accessors for runtime configuration. Run applicable `make onlineconf-validate` / `make metrics-validate` gates after generation.
+
 ## Mandatory Steps
 
 The task is NOT complete until ALL of these pass:
@@ -42,6 +48,9 @@ git:
 
 post_generate:
   - git_install
+  - tools_install
+  - clean_imports
+  - executable_scripts
   - call_generate
   - go_mod_tidy
 
@@ -92,6 +101,9 @@ git:
 
 post_generate:
   - git_install
+  - tools_install
+  - clean_imports
+  - executable_scripts
   - call_generate
   - go_mod_tidy
 
@@ -196,8 +208,7 @@ Note: `dev_stand: true` requires `git_install` in `post_generate` (already inclu
 ## Step 3: Generate
 
 ```bash
-which go-project-starter || go install github.com/Educentr/go-project-starter/cmd/go-project-starter@latest
-go-project-starter --configDir={config_dir} --target={target_dir}
+go run github.com/Educentr/go-project-starter/cmd/go-project-starter@v0.31.0 --configDir={config_dir} --target={target_dir}
 ```
 
 If fails, fix config and retry.
@@ -225,3 +236,7 @@ Tell the user:
 - OnlineConf path for token: `/{name}/worker/telegram/telegrambot/token`
 - How to run: `make run-bot`
 - Workers are DISABLED by default — set enabled=true in OnlineConf
+
+### Telegram commands in v0.31
+
+Register custom commands in `func (w *Worker) customize()` using `w.AddCommands(telegram.Cmd{…})`; place the method in a manual file or below the disclaimer. Move update/idle/unknown handler overrides into the same method. `Create()` calls it after generated registrations. Existing `init()` / global `cmdMaps` registrations must be migrated; `gochecknoinits` rejects `init()` including tests.

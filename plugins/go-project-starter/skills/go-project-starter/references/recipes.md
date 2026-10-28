@@ -1,5 +1,7 @@
 # Advanced Configuration Recipes
 
+Target: **v0.31.0**. For metrics/OnlineConf maps, custom generators, CI checks, lint ownership/overlays, Docker build args/labels and Grafana annotations, use the examples in [v0.30–v0.31 guidance](releases-v0.30-v0.31.md). Regeneration uses the recorded generator pin; copied specs are edited only at their source. Telegram commands use `(*Worker).customize()` and `w.AddCommands`, and runtime config reads use generated `occonf` accessors.
+
 ## 1. Multi-App Project (REST API + Bot + Background Worker)
 
 ```yaml
@@ -43,6 +45,9 @@ driver:
 
 post_generate:
   - git_install
+  - tools_install
+  - clean_imports
+  - executable_scripts
   - call_generate
   - go_mod_tidy
 

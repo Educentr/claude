@@ -1,5 +1,19 @@
 # Troubleshooting Guide
 
+## v0.30–v0.31 upgrade failures
+
+- **Wrong generator still runs:** v0.31 `make regenerate` uses `GPSVERSION` via `go run`, not PATH. Use `make update-starter STARTER_VERSION=v0.31.0`; older Makefiles can bootstrap by invoking the selected version directly. First run needs module proxy/cache access.
+- **Unowned destination conflict:** inspect and preserve each reported file, then move/remove conflicts and retry. Keep `.project-config/meta.yaml`; do not discard it to disable ownership checks.
+- **Copied spec drift:** move needed edits to the contract source, then restore/remove the copied project file and regenerate. Merely updating the source leaves the manifest hash mismatch in place.
+- **Symlink destination / `ErrNonRegularTarget`:** inspect the non-regular entry; a generated path must be a regular file. Generator skips other symlinks/sockets in the tree.
+- **`undefined: cmdMaps` / init lint:** Telegram commands now register through `w.AddCommands` in `(*Worker).customize()`. GOAT setup uses `var _ = SetTestEnvInitializer(&testEnvInitializerImpl{})`. Migrate custom `init()` code; config migration does not modify it.
+- **CLI validation/help failures:** use valid names `[a-zA-Z][a-zA-Z0-9_-]*` and defaults that parse as their flag type; migrate to PrintCommandHelp/PrintSubcommandHelp and inspect obsolete `psg_handler_test.go` before removing it.
+- **OnlineConf gate:** use generated occonf accessors/lifecycle helpers, declare service keys through onlineconf.path and regenerate. The gate exists for every v0.31 project, even without that path.
+- **Metrics gate:** declare the metric in metrics.path and use the generated collector instead of constructing one outside the metrics package.
+- **`SOURCE_REF` has no effect:** any explicit `@ref`, including `@main`, is a pin and wins over overrides. Use an unpinned git URI for branch selection; plain HTTPS/local paths have no git ref.
+
+Recovery details and feature constraints: [release guidance](releases-v0.30-v0.31.md).
+
 ## Generation Errors
 
 ### `invalid config main section: Empty name`
@@ -220,19 +234,9 @@ rest:
 ```
 If you previously worked around this with a `regen-cleanup.sh` (perl `s{\.\./common/...}{./...}`) — that script can be removed once the flag is on.
 
-### `import cycle not allowed` with ogen_client
-**Cause:** `psg_auth_gen.go` for ogen_client transports contains unused self-import that `goimports` should remove.
-**Fix:** Add `clean_imports` (and `tools_install` for goimports binary) to `post_generate`:
-```yaml
-post_generate:
-  - git_install
-  - tools_install
-  - clean_imports
-  - executable_scripts
-  - call_generate
-  - go_mod_tidy
-```
-Then regenerate. The `clean_imports` step runs goimports which removes the unused self-import.
+### Authenticated ogen_client self-import or unused alias
+**Cause:** Older generator templates could emit a self-import in auth.go or an unused alias in cmd/<app>/main.go. Fixed in **v0.30.0**.
+**Fix:** Check the recorded generator version, upgrade the pin if appropriate, and regenerate. Preserve `clean_imports` for normal import cleanup; it is not the current fix for this template defect.
 
 ---
 
@@ -258,10 +262,10 @@ And ensure GOPRIVATE is set and git credentials are configured.
 
 ### `does not contain package github.com/golangci/golangci-lint/v2/cmd/golangci-lint`
 **Cause:** `golangci_version` set to a v1 version (e.g., `1.55.2`) but the generated Makefile uses v2 module path.
-**Fix:** Set `golangci_version: 2.0.2` (or later v2 release) in `tools` section:
+**Fix:** Set a compatible v2 version (v0.31 default: `2.1.6`) in `tools` section:
 ```yaml
 tools:
-  golangci_version: 2.0.2
+  golangci_version: 2.1.6
 ```
 
 ### Package version conflicts
@@ -299,18 +303,14 @@ docker compose -f docker-compose-dev.yaml up
 ```
 
 ### Changes to templates not taking effect
-**Fix:** After modifying go-project-starter templates, reinstall:
-```bash
-cd /path/to/go-project-starter && make local-install
-```
-Then in your project: `make regenerate`
+**Fix:** v0.31 `make regenerate` invokes the recorded version through `go run`. Rebuilding/installing a local binary does not change that pin. For local template development, invoke the rebuilt generator directly with `--target=<project>`. For a release upgrade, use `make update-starter STARTER_VERSION=<tag>`.
 
 ### `make regenerate` fails with obsolete files
 **Fix:** When removing a component from config, its generated files auto-delete unless they have user code below the marker. Manually migrate code from those files, then regenerate.
 
 ### First regeneration fails with `No rule to make target 'git-init'`
 **Cause:** When regenerating over files from an older go-project-starter version, obsolete files (including Makefile) are removed first, then `git_install` post-generate step tries to run `make git-init` which no longer exists.
-**Fix:** Simply run go-project-starter again — the second run will succeed because the old files are already cleaned up.
+**Fix:** On older output, retry the selected generator version after inspecting the partial result. In v0.31, partially written files absent from the manifest can produce conflicts: preserve user changes, identify leftover generated output, move/remove only those conflicting files, then retry. Keep meta.yaml; see the recovery reference above.
 
 ### Makefile targets missing after config change
 **Fix:** `make regenerate` updates the Makefile. But manual targets added below the disclaimer marker are preserved. Check that your manual targets are below the marker.
@@ -349,7 +349,7 @@ make generate-argen
 ## CI/CD Errors
 
 ### GitHub Actions fails on private modules
-**Fix:** Add GITHUB_TOKEN to workflow and configure `private_repos` in git section.
+**Fix:** Configure `git.private_repos` and ensure the GitHub Actions secret named by `git.private_repos_token_secret` exists (default `GH_PAT`). This is separate from remote-spec `token_env`. Declare the secret name in project.yaml; do not patch generated workflows or put the secret value in YAML.
 
 ### Docker push fails
 **Fix:** Check `docker.image_prefix` and ensure registry credentials are configured. Default prefix is `educentr`.
