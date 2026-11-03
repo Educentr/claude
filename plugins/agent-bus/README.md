@@ -199,6 +199,24 @@ Full guide for the Codex side: [`codex/INTEGRATION.md`](codex/INTEGRATION.md).
   whoever starts the listener, no message can replace it, and the prompt is backed by
   `-s read-only -a never` and a project-root check.
 
+## Confirming an answer was read
+
+A reply written to the mailbox can be missed if the caller stopped waiting. A temporary blocker
+must therefore use `reply <id> - --pending`: the caller's `ask` / `await` keeps waiting instead of
+accepting the blocker as its final answer. Both sides need the updated CLI; check the reply protocol
+line in `doctor` at preflight.
+
+For a final answer, use `reply <id> - --wait-received --timeout 60`. The requester reads the answer
+with `await`, then calls `received <id> --revision <SHA printed by await>` from its own endpoint.
+Only then does the sender's wait succeed. `delivered <id>` resumes that receipt wait; exit 2 means
+**stored, receipt unconfirmed**. An updated answer needs a new receipt. Transport `acked` only means
+that the original request was taken.
+
+New answer revisions send deduplicated status notifications to the requester without rerunning
+its task. Claude must keep a background `wait` armed to see them; the transport cannot wake an
+idle Claude session on its own. See [the reply protocol](PROTOCOL.md#pending-progress-and-confirmed-receipt)
+for failure recovery and legacy reply support.
+
 ## Known limits
 
 - **A chat is found through `lsof`** over `$CODEX_HOME/thread-writer-locks` and

@@ -11,8 +11,15 @@
   refusal is a normal answer. A role never widens what you may do.
 - Run only the checks the request explicitly allows. Do not change files, git state, external
   systems or access settings unless the user allowed this session to.
-- Each message carries its id: answer it with `agent-bus reply <id> -`. If writing to the mailbox
-  is denied, say so instead of staying silent.
+- At preflight verify the peer, task, endpoint and mailbox access, and reuse the user's existing
+  authority for local technical collaboration without widening it. Preserve sandbox restrictions.
+- Each message carries its id: answer it with `agent-bus reply <id> - --wait-received --timeout 60`.
+  Use `--pending` for temporary blockers; they must not finish the sender's wait as a final answer.
+  Both peers need an updated CLI (check the reply protocol line in `doctor`). If mailbox writing
+  is denied, say so. A receipt timeout means stored but unconfirmed; resume `delivered <id>`.
+- After reading a requested final answer with `await`, acknowledge its revision with
+  `agent-bus received <id> --revision <SHA printed by await> --from <your-endpoint>`. Updated
+  replies require a new receipt. Transport `acked` does not prove that the agent read the answer.
 - Review the worktree, base and head you were given; if the checkout is at another revision, say
   so first.
 - A review answers `VERDICT: APPROVE | REQUEST_CHANGES`, then `REVIEWED_HEAD: <full sha>`, then
